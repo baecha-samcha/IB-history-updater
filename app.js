@@ -9,7 +9,7 @@ const TOTAL_MONTHS = (YEAR_MAX - YEAR_MIN + 1) * 12; // 1812
 const STORAGE_KEY = "ibhistory.v1";
 
 // 줌 단계: 선택된 tick 단위(개월) → px/month
-const PX_PER_MONTH = { 6: 6, 3: 12, 1: 36 };
+const PX_PER_MONTH = { 12: 3, 6: 6, 3: 12, 1: 36 };
 
 const RULER_H   = 46;
 const LANE_GAP  = 18;
@@ -100,7 +100,25 @@ function getUserData(store, username) {
   u.data.periods = u.data.periods || [];
   u.data.events  = u.data.events  || [];
   u.data.flows   = u.data.flows   || [];
+  migrateData(u.data);
   return u.data;
+}
+function migrateData(data) {
+  // 연도 기반 → 날짜 기반
+  data.periods.forEach(p => {
+    if (!p.startDate && p.startYear != null) {
+      p.startDate = `${p.startYear}-01-01`;
+      p.endDate   = `${p.endYear || p.startYear}-12-31`;
+    }
+    if (p.colorTag == null) p.colorTag = "";
+  });
+  // flow: eventIds → items
+  data.flows.forEach(f => {
+    if (!f.items) {
+      f.items = (f.eventIds || []).map(id => ({ type: "event", id }));
+    }
+    if (f.colorTag == null) f.colorTag = "";
+  });
 }
 function persistUserData() {
   if (!State.user) return;
@@ -296,18 +314,20 @@ function renderRuler(svg, pxm, height, opts = {}) {
     g.appendChild(el("text", {
       x: x + 2, y: 14, class: "tick-label year", text: String(y)
     }));
-    // 하위 눈금 (unit 개월마다)
-    for (let m = unit; m < 12; m += unit) {
-      const xm = xFromMonthIndex((y - YEAR_MIN) * 12 + m, pxm);
-      g.appendChild(el("line", {
-        x1: xm, y1: RULER_H - 10, x2: xm, y2: height,
-        class: m % 6 === 0 ? "grid-line major" : "grid-line"
-      }));
-      if (pxm * unit >= 28) {
-        g.appendChild(el("text", {
-          x: xm + 2, y: RULER_H - 2, class: "tick-label",
-          text: (m + 1) + "월"
+    // 하위 눈금 (unit 개월마다). unit >= 12 이면 sub-tick 없음.
+    if (unit < 12) {
+      for (let m = unit; m < 12; m += unit) {
+        const xm = xFromMonthIndex((y - YEAR_MIN) * 12 + m, pxm);
+        g.appendChild(el("line", {
+          x1: xm, y1: RULER_H - 10, x2: xm, y2: height,
+          class: m % 6 === 0 ? "grid-line major" : "grid-line"
         }));
+        if (pxm * unit >= 28) {
+          g.appendChild(el("text", {
+            x: xm + 2, y: RULER_H - 2, class: "tick-label",
+            text: (m + 1) + "월"
+          }));
+        }
       }
     }
   }
@@ -319,21 +339,33 @@ function renderRuler(svg, pxm, height, opts = {}) {
   svg.appendChild(g);
 }
 
+function periodBounds(p, pxm) {
+  const x1 = xFromDate(p.startDate, pxm);
+  const x2 = xFromDate(p.endDate, pxm);
+  return { x1: Math.min(x1, x2), x2: Math.max(x1, x2) };
+}
+function periodLabelText(p) {
+  const s = (p.startDate || "").slice(0, 10);
+  const e = (p.endDate || "").slice(0, 10);
+  const tag = p.colorTag ? `[${p.colorTag}] ` : "";
+  return `${tag}${p.title || "기간"} (${s} ~ ${e})`;
+}
+
 function renderPeriods(svg, pxm, yStart) {
   const periods = State.data.periods;
-  const segs = periods.map(p => ({
-    id: p.id,
-    x1: xFromYear(clampYear(p.startYear), pxm),
-    x2: xFromYear(clampYear(p.endYear) + 1, pxm)
-  }));
+  const segs = periods.map(p => {
+    const b = periodBounds(p, pxm);
+    return { id: p.id, x1: b.x1, x2: b.x2 };
+  });
   const { rowMap, rowCount } = assignRows(segs);
   const g = el("g", { class: "periods" });
+  const positions = {}; // id → {x, y} (중심 상단, 흐름 기준점)
   periods.forEach(p => {
     const r = rowMap[p.id] || 0;
-    const x1 = xFromYear(clampYear(p.startYear), pxm);
-    const x2 = xFromYear(clampYear(p.endYear) + 1, pxm);
+    const { x1, x2 } = periodBounds(p, pxm);
     const y  = yStart + r * (PERIOD_H + PERIOD_PAD);
     const w  = Math.max(8, x2 - x1);
+    positions[p.id] = { x: x1 + w / 2, y };
     g.appendChild(el("rect", {
       x: x1, y, width: w, height: PERIOD_H,
       rx: 4, fill: p.color || "#60a5fa",
@@ -342,14 +374,13 @@ function renderPeriods(svg, pxm, yStart) {
       class: "period-rect",
       onClick: () => openPeriodEdit(p)
     }));
-    const label = `${p.title || "기간"} (${p.startYear}–${p.endYear})`;
     g.appendChild(el("text", {
       x: x1 + 6, y: y + PERIOD_H - 7,
-      class: "period-label", text: label
+      class: "period-label", text: periodLabelText(p)
     }));
   });
   svg.appendChild(g);
-  return yStart + rowCount * (PERIOD_H + PERIOD_PAD);
+  return { yEnd: yStart + rowCount * (PERIOD_H + PERIOD_PAD), positions };
 }
 
 /* ---------- 7. 렌더: 포인트 + 전체 render ---------- */
@@ -397,13 +428,11 @@ function render() {
   const pxm = getPxPerMonth();
   const width = totalWidth(pxm);
 
-  // 임시 높이로 눈금 렌더 후, periods/events 쌓고 최종 높이 확정
-  // 먼저 layout 계산 → 높이 확정 → 실제 렌더
-  const periodSegs = State.data.periods.map(p => ({
-    id: p.id,
-    x1: xFromYear(clampYear(p.startYear), pxm),
-    x2: xFromYear(clampYear(p.endYear) + 1, pxm)
-  }));
+  // 레이아웃 계산 → 높이 확정 → 실제 렌더
+  const periodSegs = State.data.periods.map(p => {
+    const b = periodBounds(p, pxm);
+    return { id: p.id, x1: b.x1, x2: b.x2 };
+  });
   const periodRows = assignRows(periodSegs).rowCount;
   const periodsH = periodRows * (PERIOD_H + PERIOD_PAD);
 
@@ -422,12 +451,20 @@ function render() {
 
   renderRuler(svg, pxm, height);
   const periodsY = RULER_H + TOP_PAD;
-  const periodsBottom = renderPeriods(svg, pxm, periodsY);
+  const { yEnd: periodsBottom, positions: periodPos } = renderPeriods(svg, pxm, periodsY);
   const eventsY = periodsBottom + LANE_GAP;
-  const { positions } = renderEvents(svg, pxm, eventsY);
+  const { positions: eventPos } = renderEvents(svg, pxm, eventsY);
 
-  renderFlows(svg, positions);
+  const combined = combinePositions(periodPos, eventPos);
+  renderFlows(svg, combined);
   renderLegend();
+}
+
+function combinePositions(periodPos, eventPos) {
+  const out = {};
+  for (const [id, p] of Object.entries(periodPos)) out["period:" + id] = p;
+  for (const [id, p] of Object.entries(eventPos))  out["event:"  + id] = p;
+  return out;
 }
 
 /* ---------- 8. 렌더: 흐름 화살표 + 툴팁 ---------- */
@@ -443,12 +480,17 @@ function ensureArrowDefs(svg, color, id) {
   defs.appendChild(marker);
 }
 
+function flowItems(f) {
+  // 마이그레이션 후에는 f.items 사용
+  if (f.items) return f.items;
+  return (f.eventIds || []).map(id => ({ type: "event", id }));
+}
 function renderFlows(svg, positions) {
   const flows = State.data.flows;
   const g = el("g", { class: "flows" });
   flows.forEach(f => {
-    const pts = (f.eventIds || [])
-      .map(id => positions[id])
+    const pts = flowItems(f)
+      .map(it => positions[`${it.type}:${it.id}`])
       .filter(Boolean);
     if (pts.length < 2) return;
     const color = f.color || "#ef4444";
@@ -499,14 +541,16 @@ function escapeHtml(s) {
 // --- 기간(Period) ---
 function openPeriodEdit(existing = null) {
   const p = existing || {
-    id: uid(), color: "#60a5fa",
-    startYear: 1900, endYear: 1910,
+    id: uid(), color: "#60a5fa", colorTag: "",
+    startDate: "1900-01-01", endDate: "1910-12-31",
     title: "", figures: "", photo: "", source: ""
   };
+  const minD = `${YEAR_MIN}-01-01`, maxD = `${YEAR_MAX}-12-31`;
   const f_title   = input("text", p.title, { placeholder: "예: 빅토리아 시대" });
   const f_color   = input("color", p.color || "#60a5fa");
-  const f_start   = input("number", p.startYear, { min: YEAR_MIN, max: YEAR_MAX });
-  const f_end     = input("number", p.endYear,   { min: YEAR_MIN, max: YEAR_MAX });
+  const f_tag     = input("text",  p.colorTag || "", { placeholder: "태그 (예: 정치, 경제)" });
+  const f_start   = input("date",  p.startDate || "1900-01-01", { min: minD, max: maxD });
+  const f_end     = input("date",  p.endDate   || "1910-12-31", { min: minD, max: maxD });
   const f_figures = textarea(p.figures);
   const f_source  = textarea(p.source);
   const f_photo   = input("file", "", { accept: "image/*" });
@@ -523,7 +567,8 @@ function openPeriodEdit(existing = null) {
 
   const body = document.createElement("div");
   body.appendChild(field("제목", f_title));
-  body.appendChild(row(field("색상", f_color), field("시작 연도", f_start), field("끝 연도", f_end)));
+  body.appendChild(row(field("색상", f_color), field("색상 태그", f_tag)));
+  body.appendChild(row(field("시작 연월일", f_start), field("끝 연월일", f_end)));
   body.appendChild(field("핵심 인물", f_figures));
   body.appendChild(field("출처", f_source));
   body.appendChild(field("사진 첨부", f_photo));
@@ -533,21 +578,30 @@ function openPeriodEdit(existing = null) {
   if (existing) {
     footer.push(mkBtn("삭제", "danger", () => {
       State.data.periods = State.data.periods.filter(x => x.id !== p.id);
+      // flow의 해당 기간 참조 제거
+      State.data.flows.forEach(fl => {
+        fl.items = (fl.items || []).filter(it => !(it.type === "period" && it.id === p.id));
+      });
       persistUserData(); render(); closeModal();
     }));
   }
   footer.push(mkBtn("취소", "cancel", closeModal));
   footer.push(mkBtn("저장", "primary", () => {
+    const sd = f_start.value, ed = f_end.value;
+    if (!sd || !ed) { alert("시작/끝 날짜를 입력하세요"); return; }
+    const sy = +sd.slice(0,4), ey = +ed.slice(0,4);
+    if (sy < YEAR_MIN || ey > YEAR_MAX) {
+      alert(`${YEAR_MIN}~${YEAR_MAX} 범위 내로 입력하세요`); return;
+    }
+    if (ed < sd) { alert("끝 날짜가 시작보다 앞섭니다"); return; }
     const obj = {
-      id: p.id, color: f_color.value,
-      startYear: clampYear(+f_start.value),
-      endYear: clampYear(+f_end.value),
+      id: p.id, color: f_color.value, colorTag: f_tag.value.trim(),
+      startDate: sd, endDate: ed,
       title: f_title.value.trim(),
       figures: f_figures.value.trim(),
       source: f_source.value.trim(),
       photo: photoData
     };
-    if (obj.endYear < obj.startYear) { alert("끝 연도가 시작보다 작습니다"); return; }
     const idx = State.data.periods.findIndex(x => x.id === obj.id);
     if (idx >= 0) State.data.periods[idx] = obj;
     else State.data.periods.push(obj);
@@ -655,36 +709,70 @@ function openEventDetail(e) {
 // --- 흐름(Flow) ---
 function openFlowEdit(existing = null) {
   const f0 = existing || {
-    id: uid(), title: "", description: "", color: "#ef4444",
-    eventIds: []
+    id: uid(), title: "", description: "",
+    color: "#ef4444", colorTag: "",
+    items: []
   };
   const f_title = input("text", f0.title, { placeholder: "예: 산업혁명 → 제국주의" });
   const f_desc  = textarea(f0.description);
   const f_color = input("color", f0.color || "#ef4444");
+  const f_tag   = input("text",  f0.colorTag || "", { placeholder: "태그 (예: 인과관계)" });
 
-  const box = document.createElement("div");
-  box.className = "multi-select";
-  const sortedEvs = [...State.data.events].sort((a,b) => (a.date||"").localeCompare(b.date||""));
-  if (!sortedEvs.length) {
-    box.textContent = "먼저 포인트(사건)를 2개 이상 추가하세요.";
+  // 후보: 기간 + 포인트. key = "type:id"
+  const candidates = [
+    ...State.data.periods.map(p => ({
+      key: "period:" + p.id, type: "period", id: p.id,
+      sortKey: p.startDate || "",
+      label: `[기간] ${p.title || "기간"}  (${p.startDate || ""} ~ ${p.endDate || ""})`
+    })),
+    ...State.data.events.map(e => ({
+      key: "event:" + e.id, type: "event", id: e.id,
+      sortKey: e.date || "",
+      label: `[포인트] ${e.title || "(무제)"}  (${e.date || ""})`
+    }))
+  ].sort((a,b) => a.sortKey.localeCompare(b.sortKey));
+
+  // 현재 선택 순서 (배열 of "type:id")
+  let selected = (flowItems(f0)).map(it => `${it.type}:${it.id}`);
+
+  const listBox = document.createElement("div");
+  listBox.className = "multi-select";
+  if (!candidates.length) {
+    listBox.textContent = "먼저 기간 또는 포인트를 추가하세요.";
   }
-  sortedEvs.forEach(ev => {
-    const l = document.createElement("label");
-    const cb = input("checkbox");
-    cb.checked = (f0.eventIds || []).includes(ev.id);
-    cb.dataset.id = ev.id;
-    l.appendChild(cb);
-    const span = document.createElement("span");
-    span.textContent = `${ev.date || "----"} — ${ev.title || "(무제)"}`;
-    l.appendChild(span);
-    box.appendChild(l);
-  });
+  function renderList() {
+    listBox.innerHTML = "";
+    candidates.forEach(c => {
+      const idx = selected.indexOf(c.key);
+      const row = document.createElement("label");
+      const cb = input("checkbox");
+      cb.checked = idx >= 0;
+      cb.addEventListener("change", () => {
+        if (cb.checked) {
+          if (!selected.includes(c.key)) selected.push(c.key);
+        } else {
+          selected = selected.filter(k => k !== c.key);
+        }
+        renderList();
+      });
+      row.appendChild(cb);
+      const order = document.createElement("span");
+      order.style.cssText = "min-width:22px;display:inline-block;text-align:center;font-size:11px;color:#2563eb;font-weight:700";
+      order.textContent = idx >= 0 ? `#${idx + 1}` : "";
+      row.appendChild(order);
+      const span = document.createElement("span");
+      span.textContent = c.label;
+      row.appendChild(span);
+      listBox.appendChild(row);
+    });
+  }
+  renderList();
 
   const body = document.createElement("div");
   body.appendChild(field("제목", f_title));
   body.appendChild(field("설명", f_desc));
-  body.appendChild(field("화살표 색상", f_color));
-  body.appendChild(field("연결할 포인트 (2개 이상)", box));
+  body.appendChild(row(field("화살표 색상", f_color), field("색상 태그", f_tag)));
+  body.appendChild(field("연결할 항목 (2개 이상, 선택 순서대로 연결)", listBox));
 
   const footer = [];
   if (existing) {
@@ -695,16 +783,21 @@ function openFlowEdit(existing = null) {
   }
   footer.push(mkBtn("취소", "cancel", closeModal));
   footer.push(mkBtn("저장", "primary", () => {
-    const ids = [...box.querySelectorAll("input[type=checkbox]")]
-      .filter(cb => cb.checked).map(cb => cb.dataset.id);
-    if (ids.length < 2) { alert("포인트를 2개 이상 선택하세요"); return; }
+    if (selected.length < 2) { alert("항목을 2개 이상 선택하세요"); return; }
+    const items = selected.map(k => {
+      const [type, ...rest] = k.split(":");
+      return { type, id: rest.join(":") };
+    });
     const obj = {
       id: f0.id,
       title: f_title.value.trim() || "(무제 흐름)",
       description: f_desc.value.trim(),
       color: f_color.value,
-      eventIds: ids
+      colorTag: f_tag.value.trim(),
+      items
     };
+    // 구 필드 제거
+    delete obj.eventIds;
     const idx = State.data.flows.findIndex(x => x.id === obj.id);
     if (idx >= 0) State.data.flows[idx] = obj;
     else State.data.flows.push(obj);
@@ -718,15 +811,12 @@ function renderLegend() {
   const lp = $("#list-periods"); lp.innerHTML = "";
   State.data.periods
     .slice()
-    .sort((a,b) => a.startYear - b.startYear)
+    .sort((a,b) => (a.startDate || "").localeCompare(b.startDate || ""))
     .forEach(p => {
       const li = document.createElement("li");
+      const tag = p.colorTag ? ` <small>#${escapeHtml(p.colorTag)}</small>` : "";
       li.innerHTML = `<span class="swatch" style="background:${p.color}"></span>
-        <span>${escapeHtml(p.title || "기간")} <small>(${p.startYear}–${p.endYear})</small></span>`;
-      const act = document.createElement("span");
-      act.className = "item-actions";
-      act.innerHTML = `<button title="편집">✎</button>`;
-      li.appendChild(act);
+        <span>${escapeHtml(p.title || "기간")}${tag} <small>(${p.startDate || ""} ~ ${p.endDate || ""})</small></span>`;
       li.addEventListener("click", () => openPeriodEdit(p));
       lp.appendChild(li);
     });
@@ -746,8 +836,10 @@ function renderLegend() {
   const lf = $("#list-flows"); lf.innerHTML = "";
   State.data.flows.forEach(f => {
     const li = document.createElement("li");
+    const tag = f.colorTag ? ` <small>#${escapeHtml(f.colorTag)}</small>` : "";
+    const count = flowItems(f).length;
     li.innerHTML = `<span class="swatch" style="background:${f.color}"></span>
-      <span>${escapeHtml(f.title || "(무제 흐름)")} <small>${(f.eventIds||[]).length}개</small></span>`;
+      <span>${escapeHtml(f.title || "(무제 흐름)")}${tag} <small>${count}개</small></span>`;
     li.addEventListener("click", () => openFlowEdit(f));
     lf.appendChild(li);
   });
@@ -770,11 +862,10 @@ function buildExportSVG({ startYear, endYear, unit }) {
   svg.setAttribute("xmlns", SVG_NS);
 
   // 레이아웃 계산 (전체 데이터 기준, 현재 상태 재사용)
-  const allPeriodSegs = State.data.periods.map(p => ({
-    id: p.id,
-    x1: xFromYear(clampYear(p.startYear), pxm),
-    x2: xFromYear(clampYear(p.endYear) + 1, pxm)
-  }));
+  const allPeriodSegs = State.data.periods.map(p => {
+    const b = periodBounds(p, pxm);
+    return { id: p.id, x1: b.x1, x2: b.x2 };
+  });
   const periodRows = assignRows(allPeriodSegs).rowCount;
   const allEventSegs = State.data.events.map(e => ({
     id: e.id,
@@ -788,10 +879,10 @@ function buildExportSVG({ startYear, endYear, unit }) {
   // 렌더 (일반 render와 동일한 좌표계)
   renderRuler(svg, pxm, height, { unit });
   const pY = RULER_H + TOP_PAD;
-  const pBottom = renderPeriods(svg, pxm, pY);
+  const { yEnd: pBottom, positions: periodPos } = renderPeriods(svg, pxm, pY);
   const eY = pBottom + LANE_GAP;
-  const { positions } = renderEvents(svg, pxm, eY);
-  renderFlows(svg, positions);
+  const { positions: eventPos } = renderEvents(svg, pxm, eY);
+  renderFlows(svg, combinePositions(periodPos, eventPos));
 
   // viewBox를 [startYear, endYear] 범위로 잘라냄
   svg.setAttribute("viewBox", `${x0 - LEFT_PAD} 0 ${regionW} ${height}`);
