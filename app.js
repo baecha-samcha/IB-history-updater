@@ -235,6 +235,7 @@ function readImageAsDataURL(file, maxW = 800) {
 function field(label, inputNode) {
   const d = document.createElement("div");
   d.className = "field";
+  if (inputNode && inputNode.type === "color") d.classList.add("field-color");
   const l = document.createElement("label");
   l.textContent = label;
   d.appendChild(l); d.appendChild(inputNode);
@@ -503,7 +504,9 @@ function renderFlows(svg, positions) {
       const d = `M ${a.x} ${a.y - 6} Q ${(a.x + b.x)/2} ${midY} ${b.x} ${b.y - 6}`;
       const path = el("path", {
         d, class: "flow-path",
+        fill: "none",
         stroke: color, "stroke-width": 2,
+        "stroke-linecap": "round",
         "marker-end": `url(#${markerId})`,
         "data-flow": f.id
       });
@@ -757,7 +760,7 @@ function openFlowEdit(existing = null) {
       });
       row.appendChild(cb);
       const order = document.createElement("span");
-      order.style.cssText = "min-width:22px;display:inline-block;text-align:center;font-size:11px;color:#2563eb;font-weight:700";
+      order.className = "order";
       order.textContent = idx >= 0 ? `#${idx + 1}` : "";
       row.appendChild(order);
       const span = document.createElement("span");
@@ -901,6 +904,7 @@ function buildExportSVG({ startYear, endYear, unit }) {
     .tick-label.year { font:700 12px sans-serif; fill:#334155 }
     .period-label { font:600 11px sans-serif; fill:#111 }
     .event-label { font:11px sans-serif; fill:#1f2430 }
+    .flow-path { fill:none; stroke-linecap:round }
   `;
   svg.insertBefore(style, svg.firstChild);
 
@@ -933,7 +937,8 @@ async function exportPng({ startYear, endYear, unit }) {
   canvas.toBlob(blob => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `timeline_${startYear}-${endYear}_${unit}m.png`;
+    const unitLabel = unit === 12 ? "1y" : `${unit}m`;
+    a.download = `timeline_${startYear}-${endYear}_${unitLabel}.png`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }, "image/png");
@@ -943,7 +948,7 @@ function openExportDialog() {
   const f_start = input("number", 1850, { min: YEAR_MIN, max: YEAR_MAX });
   const f_end   = input("number", 2000, { min: YEAR_MIN, max: YEAR_MAX });
   const f_unit  = document.createElement("select");
-  [["6","6개월"],["3","3개월"],["1","1개월"]].forEach(([v,l]) => {
+  [["12","1년"],["6","6개월"],["3","3개월"],["1","1개월"]].forEach(([v,l]) => {
     const o = document.createElement("option"); o.value = v; o.textContent = l;
     f_unit.appendChild(o);
   });

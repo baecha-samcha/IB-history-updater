@@ -72,9 +72,15 @@ button { font-family: inherit; cursor: pointer; }
 .seg-btn.active { background: #2563eb; color: #fff; }
 
 /* ========= Workspace ========= */
+#app-view {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
 .workspace {
   display: flex;
-  height: calc(100vh - 56px);
+  flex: 1;
+  min-height: 0;
 }
 .timeline-scroll {
   flex: 1;
@@ -195,8 +201,12 @@ button { font-family: inherit; cursor: pointer; }
   border-radius: 6px; font-size: 13px; font-family: inherit;
 }
 .field textarea { min-height: 60px; resize: vertical; }
-.field-row { display: flex; gap: 8px; }
-.field-row > .field { flex: 1; }
+.field-row { display: flex; gap: 8px; align-items: flex-end; }
+.field-row > .field { flex: 1; margin-bottom: 12px; }
+.field input[type=color] {
+  width: 56px; height: 34px; padding: 2px;
+}
+.field-row > .field.field-color { flex: 0 0 auto; }
 .photo-preview {
   margin-top: 6px; max-width: 100%; max-height: 140px;
   border-radius: 6px; border: 1px solid #e5e7eb;
@@ -210,6 +220,10 @@ button { font-family: inherit; cursor: pointer; }
   padding: 4px 6px; border-radius: 4px; font-size: 13px; cursor: pointer;
 }
 .multi-select label:hover { background: #eef1f5; }
+.multi-select .order {
+  min-width: 26px; text-align: center;
+  font-size: 11px; font-weight: 700; color: #2563eb;
+}
 
 /* Detail view */
 .detail-section { margin-bottom: 14px; }
