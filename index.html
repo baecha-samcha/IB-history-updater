@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IB History Timeline (1850–2000)</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ============= 로그인 화면 ============= -->
+<section id="auth-view" class="view">
+  <div class="auth-card">
+    <h1>IB History Timeline</h1>
+    <p class="auth-sub">1850 – 2000 · 개인 타임라인</p>
+    <form id="auth-form">
+      <label>아이디<input type="text" id="auth-username" autocomplete="username" required /></label>
+      <label>비밀번호<input type="password" id="auth-password" autocomplete="current-password" required /></label>
+      <div class="auth-actions">
+        <button type="submit" id="btn-login">로그인</button>
+        <button type="button" id="btn-register">회원가입</button>
+      </div>
+      <p id="auth-msg" class="auth-msg"></p>
+    </form>
+  </div>
+</section>
+
+<!-- ============= 메인 앱 화면 ============= -->
+<section id="app-view" class="view hidden">
+  <header class="toolbar">
+    <div class="tb-group">
+      <span class="brand">IB Timeline</span>
+      <span class="user-badge" id="user-badge"></span>
+    </div>
+    <div class="tb-group">
+      <button id="btn-add-period" class="btn">+ 연도(기간) 추가</button>
+      <button id="btn-add-event"  class="btn">+ 포인트(사건) 추가</button>
+      <button id="btn-add-flow"   class="btn">+ 흐름 추가</button>
+    </div>
+    <div class="tb-group">
+      <span class="zoom-label">단위</span>
+      <div class="seg" role="tablist">
+        <button data-zoom="6" class="seg-btn active">6개월</button>
+        <button data-zoom="3" class="seg-btn">3개월</button>
+        <button data-zoom="1" class="seg-btn">1개월</button>
+      </div>
+    </div>
+    <div class="tb-group">
+      <button id="btn-export" class="btn btn-primary">PNG 내보내기</button>
+      <button id="btn-logout" class="btn btn-ghost">로그아웃</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <div id="timeline-scroll" class="timeline-scroll">
+      <svg id="timeline-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+    <aside id="legend" class="legend">
+      <div class="legend-title">목록</div>
+      <div class="legend-sub">연도(기간)</div>
+      <ul id="list-periods"></ul>
+      <div class="legend-sub">포인트</div>
+      <ul id="list-events"></ul>
+      <div class="legend-sub">흐름</div>
+      <ul id="list-flows"></ul>
+    </aside>
+  </main>
+
+  <!-- 툴팁 (흐름 호버 시) -->
+  <div id="tooltip" class="tooltip hidden"></div>
+</section>
+
+<!-- ============= 모달 ============= -->
+<div id="modal-root" class="modal-root hidden">
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal" id="modal-box">
+    <header class="modal-head">
+      <h2 id="modal-title">제목</h2>
+      <button class="modal-close" data-close="1" aria-label="닫기">×</button>
+    </header>
+    <div class="modal-body" id="modal-body"></div>
+    <footer class="modal-foot" id="modal-foot"></footer>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
