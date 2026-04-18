@@ -91,7 +91,7 @@ function saveStore(store) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
 }
 function emptyData() {
-  return { periods: [], events: [], flows: [] };
+  return { periods: [], events: [], flows: [], tags: [] };
 }
 function getUserData(store, username) {
   const u = store.users[username];
@@ -104,21 +104,25 @@ function getUserData(store, username) {
   return u.data;
 }
 function migrateData(data) {
-  // 연도 기반 → 날짜 기반
+  data.tags = data.tags || [];
+  // 연도 기반 → 날짜 기반 + colorTag(str) → tags(array)
   data.periods.forEach(p => {
     if (!p.startDate && p.startYear != null) {
       p.startDate = `${p.startYear}-01-01`;
       p.endDate   = `${p.endYear || p.startYear}-12-31`;
     }
-    if (p.colorTag == null) p.colorTag = "";
+    if (!p.tags) p.tags = p.colorTag ? [p.colorTag] : [];
   });
-  // flow: eventIds → items
+  // flow: eventIds → items + colorTag → tags
   data.flows.forEach(f => {
-    if (!f.items) {
-      f.items = (f.eventIds || []).map(id => ({ type: "event", id }));
-    }
-    if (f.colorTag == null) f.colorTag = "";
+    if (!f.items) f.items = (f.eventIds || []).map(id => ({ type: "event", id }));
+    if (!f.tags) f.tags = f.colorTag ? [f.colorTag] : [];
   });
+  // 태그 뱅크 재구성 (기존 colorTag들 흡수)
+  const bank = new Set(data.tags);
+  data.periods.forEach(p => p.tags.forEach(t => bank.add(t)));
+  data.flows.forEach(f => f.tags.forEach(t => bank.add(t)));
+  data.tags = [...bank];
 }
 function persistUserData() {
   if (!State.user) return;
@@ -259,6 +263,76 @@ function textarea(value = "") {
   return t;
 }
 
+/* ---------- 태그 선택기 ---------- */
+// selected, allTags 를 closure로 관리. onChange(sel, all) 콜백.
+function tagSelector(allTagsInit, selectedInit, onChange) {
+  let all = [...allTagsInit];
+  let sel = [...selectedInit];
+  const wrap = document.createElement("div");
+  wrap.className = "tag-selector";
+  const chips = document.createElement("div");
+  chips.className = "tag-chips";
+  wrap.appendChild(chips);
+  function redraw() {
+    chips.innerHTML = "";
+    all.forEach(t => {
+      const c = document.createElement("button");
+      c.type = "button";
+      c.className = "tag-chip" + (sel.includes(t) ? " active" : "");
+      c.textContent = "#" + t;
+      c.onclick = () => {
+        sel = sel.includes(t) ? sel.filter(s => s !== t) : [...sel, t];
+        onChange(sel, all); redraw();
+      };
+      chips.appendChild(c);
+    });
+    const addRow = document.createElement("div");
+    addRow.className = "tag-add-row";
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.placeholder = "새 태그 추가...";
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.textContent = "+";
+    btn.onclick = () => {
+      const v = inp.value.trim();
+      if (!v || all.includes(v)) return;
+      all = [...all, v]; sel = [...sel, v];
+      inp.value = "";
+      onChange(sel, all); redraw();
+    };
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); btn.click(); }});
+    addRow.appendChild(inp); addRow.appendChild(btn);
+    chips.appendChild(addRow);
+  }
+  redraw();
+  return wrap;
+}
+
+/* ---------- 데이터 내보내기 / 가져오기 (크로스 디바이스) ---------- */
+function exportUserData() {
+  if (!State.user) return;
+  const payload = { user: State.user, data: State.data };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `ibhistory_${State.user}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function importUserData(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = reject;
+    fr.onload = () => {
+      try {
+        const p = JSON.parse(fr.result);
+        if (!p.user || !p.data) throw new Error("올바른 형식이 아닙니다");
+        resolve(p);
+      } catch(e) { reject(e); }
+    };
+    fr.readAsText(file);
+  });
+}
+
 /* ---------- 5. 좌표 & 레이아웃 ---------- */
 function getPxPerMonth(zoom = State.zoom) { return PX_PER_MONTH[zoom] || 6; }
 
@@ -367,14 +441,16 @@ function renderPeriods(svg, pxm, yStart) {
     const y  = yStart + r * (PERIOD_H + PERIOD_PAD);
     const w  = Math.max(8, x2 - x1);
     positions[p.id] = { x: x1 + w / 2, y };
-    g.appendChild(el("rect", {
+    const rect = el("rect", {
       x: x1, y, width: w, height: PERIOD_H,
       rx: 4, fill: p.color || "#60a5fa",
       "fill-opacity": "0.82",
-      stroke: "#1f2937", "stroke-opacity": "0.25",
-      class: "period-rect",
-      onClick: () => openPeriodEdit(p)
-    }));
+      stroke: "#1f2937", "stroke-opacity": "0.18",
+      class: "period-rect"
+    });
+    rect.addEventListener("click", () => openPeriodDetail(p));
+    rect.addEventListener("contextmenu", e => { e.preventDefault(); openPeriodEdit(p); });
+    g.appendChild(rect);
     g.appendChild(el("text", {
       x: x1 + 6, y: y + PERIOD_H - 7,
       class: "period-label", text: periodLabelText(p)
@@ -405,18 +481,20 @@ function renderEvents(svg, pxm, yStart) {
       x1: x, y1: yStart - 4, x2: x, y2: y,
       stroke: "#94a3b8", "stroke-width": 1, "stroke-dasharray": "2 3"
     }));
-    g.appendChild(el("circle", {
+    const circle = el("circle", {
       cx: x, cy: y, r: 5, fill: "#1d4ed8", stroke: "#fff", "stroke-width": 2,
-      class: "event-marker",
-      onClick: () => openEventDetail(e)
-    }));
-    // 제목 (클릭 가능)
+      class: "event-marker"
+    });
+    circle.addEventListener("click", () => openEventDetail(e));
+    circle.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
+    g.appendChild(circle);
     const t = el("text", {
       x: x + 8, y: y + 4,
       class: "event-label", text: e.title || "(제목 없음)",
-      style: "cursor:pointer",
-      onClick: () => openEventDetail(e)
+      style: "cursor:pointer"
     });
+    t.addEventListener("click", () => openEventDetail(e));
+    t.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
     g.appendChild(t);
   });
   svg.appendChild(g);
@@ -541,19 +619,61 @@ function escapeHtml(s) {
 
 /* ---------- 9. 폼 (기간 / 포인트 / 흐름) + 상세 + 목록 ---------- */
 
+// 기간 상세보기 (좌클릭)
+function openPeriodDetail(p) {
+  const body = document.createElement("div");
+  const hero = document.createElement("div");
+  hero.className = "detail-hero";
+  const title = document.createElement("h3"); title.textContent = p.title || "기간";
+  const date = document.createElement("div"); date.className = "detail-date";
+  date.textContent = `${p.startDate || ""} ~ ${p.endDate || ""}`;
+  hero.appendChild(title); hero.appendChild(date);
+  if (p.tags && p.tags.length) {
+    const tagRow = document.createElement("div"); tagRow.className = "detail-tags";
+    p.tags.forEach(t => {
+      const chip = document.createElement("span"); chip.className = "detail-tag";
+      chip.textContent = "#" + t; tagRow.appendChild(chip);
+    });
+    hero.appendChild(tagRow);
+  }
+  body.appendChild(hero);
+  const section = (k, v) => {
+    if (!v) return;
+    const s = document.createElement("div"); s.className = "detail-section";
+    s.innerHTML = `<div class="k">${k}</div><div class="v"></div>`;
+    s.querySelector(".v").textContent = v;
+    body.appendChild(s);
+  };
+  section("핵심 인물", p.figures);
+  section("출처", p.source);
+  if (p.photo) {
+    const s = document.createElement("div"); s.className = "detail-section";
+    s.innerHTML = `<div class="k">사진</div>`;
+    const img = document.createElement("img"); img.className = "photo-preview"; img.src = p.photo;
+    s.appendChild(img); body.appendChild(s);
+  }
+  const footer = [
+    mkBtn("편집", "cancel", () => { closeModal(); openPeriodEdit(p); }),
+    mkBtn("닫기", "primary", closeModal)
+  ];
+  openModal({ title: "기간 상세", body, footer });
+}
+
 // --- 기간(Period) ---
 function openPeriodEdit(existing = null) {
   const p = existing || {
-    id: uid(), color: "#60a5fa", colorTag: "",
+    id: uid(), color: "#60a5fa", tags: [],
     startDate: "1900-01-01", endDate: "1910-12-31",
     title: "", figures: "", photo: "", source: ""
   };
   const minD = `${YEAR_MIN}-01-01`, maxD = `${YEAR_MAX}-12-31`;
   const f_title   = input("text", p.title, { placeholder: "예: 빅토리아 시대" });
   const f_color   = input("color", p.color || "#60a5fa");
-  const f_tag     = input("text",  p.colorTag || "", { placeholder: "태그 (예: 정치, 경제)" });
   const f_start   = input("date",  p.startDate || "1900-01-01", { min: minD, max: maxD });
   const f_end     = input("date",  p.endDate   || "1910-12-31", { min: minD, max: maxD });
+  let pTags = [...(p.tags || [])];
+  let allTags = [...(State.data.tags || [])];
+  const tagSel = tagSelector(allTags, pTags, (s, a) => { pTags = s; allTags = a; });
   const f_figures = textarea(p.figures);
   const f_source  = textarea(p.source);
   const f_photo   = input("file", "", { accept: "image/*" });
@@ -570,8 +690,8 @@ function openPeriodEdit(existing = null) {
 
   const body = document.createElement("div");
   body.appendChild(field("제목", f_title));
-  body.appendChild(row(field("색상", f_color), field("색상 태그", f_tag)));
-  body.appendChild(row(field("시작 연월일", f_start), field("끝 연월일", f_end)));
+  body.appendChild(row(field("색상", f_color), field("시작 연월일", f_start), field("끝 연월일", f_end)));
+  body.appendChild(field("태그", tagSel));
   body.appendChild(field("핵심 인물", f_figures));
   body.appendChild(field("출처", f_source));
   body.appendChild(field("사진 첨부", f_photo));
@@ -581,7 +701,6 @@ function openPeriodEdit(existing = null) {
   if (existing) {
     footer.push(mkBtn("삭제", "danger", () => {
       State.data.periods = State.data.periods.filter(x => x.id !== p.id);
-      // flow의 해당 기간 참조 제거
       State.data.flows.forEach(fl => {
         fl.items = (fl.items || []).filter(it => !(it.type === "period" && it.id === p.id));
       });
@@ -597,8 +716,11 @@ function openPeriodEdit(existing = null) {
       alert(`${YEAR_MIN}~${YEAR_MAX} 범위 내로 입력하세요`); return;
     }
     if (ed < sd) { alert("끝 날짜가 시작보다 앞섭니다"); return; }
+    // 태그 뱅크 갱신
+    const bank = new Set(State.data.tags); allTags.forEach(t => bank.add(t));
+    State.data.tags = [...bank];
     const obj = {
-      id: p.id, color: f_color.value, colorTag: f_tag.value.trim(),
+      id: p.id, color: f_color.value, tags: pTags,
       startDate: sd, endDate: ed,
       title: f_title.value.trim(),
       figures: f_figures.value.trim(),
@@ -677,30 +799,30 @@ function openEventEdit(existing = null) {
   openModal({ title: existing ? "포인트 편집" : "포인트 추가", body, footer });
 }
 
-// 포인트 상세 (제목 클릭 시)
+// 포인트 상세 (좌클릭)
 function openEventDetail(e) {
   const body = document.createElement("div");
+  const hero = document.createElement("div"); hero.className = "detail-hero";
+  const title = document.createElement("h3"); title.textContent = e.title || "(무제)";
+  const date = document.createElement("div"); date.className = "detail-date";
+  date.textContent = e.date || "";
+  hero.appendChild(title); hero.appendChild(date);
+  body.appendChild(hero);
   const section = (k, v) => {
     if (!v) return;
-    const s = document.createElement("div");
-    s.className = "detail-section";
+    const s = document.createElement("div"); s.className = "detail-section";
     s.innerHTML = `<div class="k">${k}</div><div class="v"></div>`;
     s.querySelector(".v").textContent = v;
     body.appendChild(s);
   };
-  section("제목", e.title);
-  section("연월일", e.date);
   section("설명", e.description);
   section("핵심 인물", e.figures);
   section("출처", e.source);
   if (e.photo) {
-    const s = document.createElement("div");
-    s.className = "detail-section";
+    const s = document.createElement("div"); s.className = "detail-section";
     s.innerHTML = `<div class="k">사진</div>`;
-    const img = document.createElement("img");
-    img.className = "photo-preview"; img.src = e.photo;
-    s.appendChild(img);
-    body.appendChild(s);
+    const img = document.createElement("img"); img.className = "photo-preview"; img.src = e.photo;
+    s.appendChild(img); body.appendChild(s);
   }
   const footer = [
     mkBtn("편집", "cancel", () => { closeModal(); openEventEdit(e); }),
@@ -713,13 +835,14 @@ function openEventDetail(e) {
 function openFlowEdit(existing = null) {
   const f0 = existing || {
     id: uid(), title: "", description: "",
-    color: "#ef4444", colorTag: "",
-    items: []
+    color: "#ef4444", tags: [], items: []
   };
   const f_title = input("text", f0.title, { placeholder: "예: 산업혁명 → 제국주의" });
   const f_desc  = textarea(f0.description);
   const f_color = input("color", f0.color || "#ef4444");
-  const f_tag   = input("text",  f0.colorTag || "", { placeholder: "태그 (예: 인과관계)" });
+  let fTags = [...(f0.tags || [])];
+  let fAllTags = [...(State.data.tags || [])];
+  const fTagSel = tagSelector(fAllTags, fTags, (s, a) => { fTags = s; fAllTags = a; });
 
   // 후보: 기간 + 포인트. key = "type:id"
   const candidates = [
@@ -774,7 +897,8 @@ function openFlowEdit(existing = null) {
   const body = document.createElement("div");
   body.appendChild(field("제목", f_title));
   body.appendChild(field("설명", f_desc));
-  body.appendChild(row(field("화살표 색상", f_color), field("색상 태그", f_tag)));
+  body.appendChild(row(field("화살표 색상", f_color)));
+  body.appendChild(field("태그", fTagSel));
   body.appendChild(field("연결할 항목 (2개 이상, 선택 순서대로 연결)", listBox));
 
   const footer = [];
@@ -791,12 +915,14 @@ function openFlowEdit(existing = null) {
       const [type, ...rest] = k.split(":");
       return { type, id: rest.join(":") };
     });
+    const bank = new Set(State.data.tags); fAllTags.forEach(t => bank.add(t));
+    State.data.tags = [...bank];
     const obj = {
       id: f0.id,
       title: f_title.value.trim() || "(무제 흐름)",
       description: f_desc.value.trim(),
       color: f_color.value,
-      colorTag: f_tag.value.trim(),
+      tags: fTags,
       items
     };
     // 구 필드 제거
@@ -817,10 +943,12 @@ function renderLegend() {
     .sort((a,b) => (a.startDate || "").localeCompare(b.startDate || ""))
     .forEach(p => {
       const li = document.createElement("li");
-      const tag = p.colorTag ? ` <small>#${escapeHtml(p.colorTag)}</small>` : "";
+      const tags = (p.tags || []).map(t => `<small>#${escapeHtml(t)}</small>`).join(" ");
       li.innerHTML = `<span class="swatch" style="background:${p.color}"></span>
-        <span>${escapeHtml(p.title || "기간")}${tag} <small>(${p.startDate || ""} ~ ${p.endDate || ""})</small></span>`;
-      li.addEventListener("click", () => openPeriodEdit(p));
+        <span>${escapeHtml(p.title || "기간")} ${tags} <small>(${p.startDate || ""} ~ ${p.endDate || ""})</small></span>`;
+      li.title = "좌클릭: 상세 / 우클릭: 편집";
+      li.addEventListener("click", () => openPeriodDetail(p));
+      li.addEventListener("contextmenu", e => { e.preventDefault(); openPeriodEdit(p); });
       lp.appendChild(li);
     });
 
@@ -832,17 +960,19 @@ function renderLegend() {
       const li = document.createElement("li");
       li.innerHTML = `<span class="swatch" style="background:#1d4ed8"></span>
         <span>${escapeHtml(e.title || "(무제)")} <small>${e.date || ""}</small></span>`;
+      li.title = "좌클릭: 상세 / 우클릭: 편집";
       li.addEventListener("click", () => openEventDetail(e));
+      li.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
       le.appendChild(li);
     });
 
   const lf = $("#list-flows"); lf.innerHTML = "";
   State.data.flows.forEach(f => {
     const li = document.createElement("li");
-    const tag = f.colorTag ? ` <small>#${escapeHtml(f.colorTag)}</small>` : "";
+    const tags = (f.tags || []).map(t => `<small>#${escapeHtml(t)}</small>`).join(" ");
     const count = flowItems(f).length;
     li.innerHTML = `<span class="swatch" style="background:${f.color}"></span>
-      <span>${escapeHtml(f.title || "(무제 흐름)")}${tag} <small>${count}개</small></span>`;
+      <span>${escapeHtml(f.title || "(무제 흐름)")} ${tags} <small>${count}개</small></span>`;
     li.addEventListener("click", () => openFlowEdit(f));
     lf.appendChild(li);
   });
@@ -987,15 +1117,58 @@ function wireApp() {
   $("#btn-add-event").addEventListener("click", () => openEventEdit());
   $("#btn-add-flow").addEventListener("click", () => openFlowEdit());
   $("#btn-export").addEventListener("click", openExportDialog);
+  $("#btn-data-export").addEventListener("click", exportUserData);
+  $("#btn-data-import").addEventListener("change", async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      const p = await importUserData(file);
+      const store = loadStore();
+      if (!store.users[p.user]) {
+        const hash = store.users[State.user]?.passwordHash || "";
+        store.users[p.user] = { passwordHash: hash, data: p.data };
+      } else {
+        store.users[p.user].data = p.data;
+      }
+      saveStore(store);
+      State.data = p.data;
+      migrateData(State.data);
+      render();
+      alert("데이터를 가져왔습니다.");
+    } catch(err) { alert("가져오기 실패: " + err.message); }
+    e.target.value = "";
+  });
   $$(".seg-btn").forEach(b => b.addEventListener("click", () => setZoom(+b.dataset.zoom)));
   $("#modal-root").addEventListener("click", (e) => {
     if (e.target.dataset.close === "1") closeModal();
   });
 }
 
+// 로그인 화면 가져오기 (다른 기기에서 JSON import 후 계정 생성)
+function wireAuthImport() {
+  const inp = $("#auth-import-file"); if (!inp) return;
+  inp.addEventListener("change", async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      const p = await importUserData(file);
+      const store = loadStore();
+      const existing = store.users[p.user];
+      if (existing) {
+        existing.data = p.data;
+      } else {
+        store.users[p.user] = { passwordHash: "", data: p.data };
+      }
+      saveStore(store);
+      $("#auth-username").value = p.user;
+      showAuthMsg(`"${p.user}" 데이터를 가져왔습니다. 비밀번호를 입력하고 로그인하세요.`, true);
+    } catch(err) { showAuthMsg("가져오기 실패: " + err.message); }
+    e.target.value = "";
+  });
+}
+
 function boot() {
   wireAuth();
   wireApp();
+  wireAuthImport();
   const store = loadStore();
   if (store.session && store.users[store.session.username]) {
     enterApp(store.session.username);

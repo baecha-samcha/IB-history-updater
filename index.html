@@ -23,6 +23,13 @@
       </div>
       <p id="auth-msg" class="auth-msg"></p>
     </form>
+    <div class="auth-import-row">
+      <span>다른 기기에서 이전한 데이터가 있나요?</span>
+      <label class="btn" style="font-size:12px;padding:5px 10px;cursor:pointer">
+        JSON 가져오기
+        <input id="auth-import-file" type="file" accept=".json" style="display:none" />
+      </label>
+    </div>
   </div>
 </section>
 
@@ -48,7 +55,12 @@
       </div>
     </div>
     <div class="tb-group">
-      <button id="btn-export" class="btn btn-primary">PNG 내보내기</button>
+      <button id="btn-export" class="btn btn-export-btn">PNG 내보내기</button>
+      <button id="btn-data-export" class="btn btn-ghost" title="데이터를 JSON으로 저장 (다른 기기에서 가져오기 가능)">📤 데이터 내보내기</button>
+      <label class="btn btn-ghost" style="cursor:pointer" title="다른 기기에서 내보낸 JSON 불러오기">
+        📥 데이터 가져오기
+        <input id="btn-data-import" type="file" accept=".json" style="display:none" />
+      </label>
       <button id="btn-logout" class="btn btn-ghost">로그아웃</button>
     </div>
   </header>
