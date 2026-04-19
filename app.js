@@ -134,4 +134,209 @@ function migrateData(data) {
   });
 }
 
-/* PART 2–5는 아래에 이어집니다 */
+/* ===========================================================
+   Part 2/5: 전역 상태 + Supabase 인증 + 동기화
+   =========================================================== */
+
+/* ---------- 전역 상태 ---------- */
+const State = {
+  session: null,   // Supabase session 객체
+  user: null,      // username 문자열
+  data: emptyData(),
+  zoom: 6,
+};
+
+/* ---------- 동기화 상태 UI ---------- */
+function updateSyncStatus(s) {
+  const el2 = $("#sync-status");
+  if (!el2) return;
+  const map = { syncing: "⏳ 동기화 중", synced: "☁️ 동기화됨", offline: "📴 오프라인", error: "⚠️ 오류" };
+  el2.textContent = map[s] || "";
+}
+
+/* ---------- Supabase 인증 ---------- */
+function showAuthMsg(msg, ok = false) {
+  const n = $("#auth-msg");
+  n.textContent = msg || "";
+  n.style.color = ok ? "#0a7" : "#b33";
+}
+
+function usernameToEmail(u) {
+  return u.toLowerCase().replace(/[^a-z0-9._-]/g, "_") + "@ibhistory.app";
+}
+
+async function handleRegister() {
+  const u = $("#auth-username").value.trim();
+  const p = $("#auth-password").value;
+  if (!u || !p) return showAuthMsg("아이디/비밀번호를 입력하세요");
+  const email = usernameToEmail(u);
+  showAuthMsg("가입 중...");
+  const { error } = await sb.auth.signUp({ email, password: p });
+  if (error) return showAuthMsg(error.message);
+  showAuthMsg("가입 완료. 로그인 해주세요.", true);
+}
+
+async function handleLogin(e) {
+  e && e.preventDefault();
+  const u = $("#auth-username").value.trim();
+  const p = $("#auth-password").value;
+  if (!u || !p) return showAuthMsg("아이디/비밀번호를 입력하세요");
+  const email = usernameToEmail(u);
+  showAuthMsg("로그인 중...");
+  const { data, error } = await sb.auth.signInWithPassword({ email, password: p });
+  if (error) return showAuthMsg(error.message);
+  State.session = data.session;
+  State.user = u;
+  await enterApp();
+}
+
+async function handleLogout() {
+  await sb.auth.signOut();
+  State.session = null;
+  State.user = null;
+  State.data = emptyData();
+  $("#app-view").classList.add("hidden");
+  $("#auth-view").classList.remove("hidden");
+  $("#auth-password").value = "";
+  showAuthMsg("");
+}
+
+async function enterApp() {
+  $("#user-badge").textContent = State.user;
+  $("#auth-view").classList.add("hidden");
+  $("#app-view").classList.remove("hidden");
+  if (navigator.onLine) {
+    updateSyncStatus("syncing");
+    try {
+      await loadFromSupabase();
+      const cache = loadCache();
+      cache[State.user] = State.data;
+      saveCache(cache);
+      updateSyncStatus("synced");
+    } catch (err) {
+      console.warn("Supabase load failed, using cache:", err);
+      const cache = loadCache();
+      State.data = cache[State.user] || emptyData();
+      migrateData(State.data);
+      updateSyncStatus("offline");
+    }
+  } else {
+    const cache = loadCache();
+    State.data = cache[State.user] || emptyData();
+    migrateData(State.data);
+    updateSyncStatus("offline");
+  }
+  render();
+}
+
+/* ---------- Supabase 데이터 불러오기 ---------- */
+async function loadFromSupabase() {
+  const userId = State.session.user.id;
+  const [ct, p, e, f, fi] = await Promise.all([
+    sb.from("color_tags").select("*").eq("user_id", userId),
+    sb.from("periods").select("*").eq("user_id", userId),
+    sb.from("events").select("*").eq("user_id", userId),
+    sb.from("flows").select("*").eq("user_id", userId),
+    sb.from("flow_items").select("*"),
+  ]);
+  State.data = {
+    colorTags: (ct.data || []).map(r => ({ id: r.id, name: r.name, color: r.color })),
+    periods: (p.data || []).map(r => ({
+      id: r.id, title: r.title,
+      startDate: r.start_date, endDate: r.end_date,
+      figures: r.figures, source: r.source, photo: r.photo,
+      colorTagIds: r.color_tag_ids || []
+    })),
+    events: (e.data || []).map(r => ({
+      id: r.id, title: r.title, date: r.event_date,
+      description: r.description, figures: r.figures,
+      source: r.source, photo: r.photo,
+      colorTagIds: r.color_tag_ids || []
+    })),
+    flows: (f.data || []).map(r => ({
+      id: r.id, title: r.title, description: r.description,
+      colorTagIds: r.color_tag_ids || [],
+      items: (fi.data || [])
+        .filter(i => i.flow_id === r.id)
+        .sort((a, b) => a.position - b.position)
+        .map(i => ({ type: i.item_type, id: i.item_id }))
+    })),
+  };
+}
+
+/* ---------- Supabase 동기화 (전체 교체) ---------- */
+async function syncToSupabase() {
+  if (!navigator.onLine || !State.session) return false;
+  const userId = State.session.user.id;
+  // 기존 데이터 전체 삭제 (flow_items는 flows 삭제 시 CASCADE)
+  await Promise.all([
+    sb.from("flows").delete().eq("user_id", userId),
+    sb.from("periods").delete().eq("user_id", userId),
+    sb.from("events").delete().eq("user_id", userId),
+    sb.from("color_tags").delete().eq("user_id", userId),
+  ]);
+  // 새 데이터 삽입
+  if (State.data.colorTags.length)
+    await sb.from("color_tags").insert(
+      State.data.colorTags.map(t => ({ id: t.id, user_id: userId, name: t.name, color: t.color }))
+    );
+  if (State.data.periods.length)
+    await sb.from("periods").insert(
+      State.data.periods.map(p => ({
+        id: p.id, user_id: userId, title: p.title,
+        start_date: p.startDate, end_date: p.endDate,
+        figures: p.figures, source: p.source, photo: p.photo,
+        color_tag_ids: p.colorTagIds || []
+      }))
+    );
+  if (State.data.events.length)
+    await sb.from("events").insert(
+      State.data.events.map(e => ({
+        id: e.id, user_id: userId, title: e.title, event_date: e.date,
+        description: e.description, figures: e.figures,
+        source: e.source, photo: e.photo,
+        color_tag_ids: e.colorTagIds || []
+      }))
+    );
+  if (State.data.flows.length) {
+    await sb.from("flows").insert(
+      State.data.flows.map(f => ({
+        id: f.id, user_id: userId, title: f.title,
+        description: f.description, color_tag_ids: f.colorTagIds || []
+      }))
+    );
+    const rows = [];
+    State.data.flows.forEach(f =>
+      (f.items || []).forEach((it, idx) =>
+        rows.push({ flow_id: f.id, position: idx, item_type: it.type, item_id: it.id })
+      )
+    );
+    if (rows.length) await sb.from("flow_items").insert(rows);
+  }
+  return true;
+}
+
+let _syncTimer = null;
+function schedulePushSync() {
+  if (_syncTimer) clearTimeout(_syncTimer);
+  _syncTimer = setTimeout(async () => {
+    updateSyncStatus("syncing");
+    try {
+      const ok = await syncToSupabase();
+      updateSyncStatus(ok ? "synced" : "offline");
+    } catch (err) {
+      console.error("Sync error:", err);
+      updateSyncStatus("error");
+    }
+  }, 800);
+}
+
+function persistUserData() {
+  if (!State.user) return;
+  const cache = loadCache();
+  cache[State.user] = State.data;
+  saveCache(cache);
+  schedulePushSync();
+}
+
+/* PART 3–5는 아래에 이어집니다 */
