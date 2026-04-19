@@ -339,4 +339,345 @@ function persistUserData() {
   schedulePushSync();
 }
 
-/* PART 3–5는 아래에 이어집니다 */
+/* ===========================================================
+   Part 3/5: 모달 + 폼 헬퍼 + colorTagSelector + 좌표/렌더
+   =========================================================== */
+
+/* ---------- 모달 ---------- */
+function openModal({ title, body, footer }) {
+  $("#modal-title").textContent = title || "";
+  const bodyEl = $("#modal-body"); bodyEl.innerHTML = "";
+  if (typeof body === "string") bodyEl.innerHTML = body;
+  else if (body instanceof Node) bodyEl.appendChild(body);
+  const footEl = $("#modal-foot"); footEl.innerHTML = "";
+  (footer || []).forEach(b => footEl.appendChild(b));
+  $("#modal-root").classList.remove("hidden");
+}
+function closeModal() { $("#modal-root").classList.add("hidden"); }
+function mkBtn(label, cls, onClick) {
+  const b = document.createElement("button");
+  b.className = cls; b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function readImageAsDataURL(file, maxW = 800) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve(null);
+    const fr = new FileReader();
+    fr.onerror = reject;
+    fr.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxW / img.width);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL("image/jpeg", 0.85));
+      };
+      img.onerror = reject;
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
+function field(label, inputNode) {
+  const d = document.createElement("div");
+  d.className = "field";
+  const l = document.createElement("label");
+  l.textContent = label;
+  d.appendChild(l); d.appendChild(inputNode);
+  return d;
+}
+function row(...fields) {
+  const r = document.createElement("div");
+  r.className = "field-row";
+  fields.forEach(f => r.appendChild(f));
+  return r;
+}
+function input(type, value = "", attrs = {}) {
+  const i = document.createElement("input");
+  i.type = type; i.value = value ?? "";
+  for (const [k, v] of Object.entries(attrs)) i.setAttribute(k, v);
+  return i;
+}
+function textarea(value = "") {
+  const t = document.createElement("textarea");
+  t.value = value || "";
+  return t;
+}
+
+/* ---------- colorTagSelector ---------- */
+// selectedIdsInit: 초기 선택된 id 배열
+// onChange(selectedIds): 선택 변경 시 콜백
+function colorTagSelector(selectedIdsInit, onChange) {
+  let sel = [...selectedIdsInit];
+  const wrap = document.createElement("div");
+  wrap.className = "tag-selector";
+  const chips = document.createElement("div");
+  chips.className = "tag-chips";
+  wrap.appendChild(chips);
+
+  function redraw() {
+    chips.innerHTML = "";
+    State.data.colorTags.forEach(ct => {
+      const c = document.createElement("button");
+      c.type = "button";
+      c.className = "tag-chip color-tag-chip" + (sel.includes(ct.id) ? " active" : "");
+      const dot = document.createElement("span");
+      dot.className = "color-dot";
+      dot.style.background = ct.color;
+      c.appendChild(dot);
+      c.appendChild(document.createTextNode(ct.name));
+      c.onclick = () => {
+        sel = sel.includes(ct.id) ? sel.filter(s => s !== ct.id) : [...sel, ct.id];
+        onChange(sel); redraw();
+      };
+      chips.appendChild(c);
+    });
+
+    const addRow = document.createElement("div");
+    addRow.className = "tag-add-row color-tag-add-row";
+    const colorInp = input("color", randomColor());
+    const nameInp  = input("text", "", { placeholder: "새 레이블 이름..." });
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.textContent = "+";
+    btn.onclick = () => {
+      const name = nameInp.value.trim();
+      if (!name) return;
+      if (State.data.colorTags.some(t => t.name === name)) {
+        alert("이미 존재하는 이름입니다"); return;
+      }
+      const newCt = { id: uid(), name, color: colorInp.value };
+      State.data.colorTags.push(newCt);
+      sel = [...sel, newCt.id];
+      nameInp.value = "";
+      onChange(sel); redraw();
+    };
+    nameInp.addEventListener("keydown", e => {
+      if (e.key === "Enter") { e.preventDefault(); btn.click(); }
+    });
+    addRow.appendChild(colorInp);
+    addRow.appendChild(nameInp);
+    addRow.appendChild(btn);
+    chips.appendChild(addRow);
+  }
+  redraw();
+  return wrap;
+}
+
+/* ---------- 색상 헬퍼 ---------- */
+function getItemColor(item, type) {
+  const ids = item.colorTagIds || [];
+  if (ids.length) {
+    const ct = State.data.colorTags.find(t => t.id === ids[0]);
+    if (ct) return ct.color;
+  }
+  return type === "event" ? "#1d4ed8" : type === "flow" ? "#ef4444" : "#94a3b8";
+}
+
+/* ---------- 좌표 & 레이아웃 ---------- */
+function getPxPerMonth(zoom = State.zoom) { return PX_PER_MONTH[zoom] || 6; }
+function xFromMonthIndex(mi, pxm = getPxPerMonth()) { return LEFT_PAD + mi * pxm; }
+function xFromYear(y, pxm) { return xFromMonthIndex(yearToMonthIndex(y), pxm); }
+function xFromDate(s, pxm) {
+  const p = parseYMD(s); if (!p) return LEFT_PAD;
+  return xFromMonthIndex(ymdToMonthIndex(p), pxm);
+}
+function totalWidth(pxm = getPxPerMonth()) { return LEFT_PAD + TOTAL_MONTHS * pxm + RIGHT_PAD; }
+
+function assignRows(segments) {
+  const sorted = [...segments].sort((a, b) => a.x1 - b.x1);
+  const rows = [];
+  const out = {};
+  for (const s of sorted) {
+    let r = rows.findIndex(end => end <= s.x1 - 4);
+    if (r < 0) { rows.push(s.x2); r = rows.length - 1; }
+    else rows[r] = s.x2;
+    out[s.id] = r;
+  }
+  return { rowMap: out, rowCount: Math.max(1, rows.length) };
+}
+function estimateEventWidth(ev) {
+  return Math.max(60, ((ev.title || "") + "  " + (ev.date || "")).length * 7 + 20);
+}
+function periodBounds(p, pxm) {
+  const x1 = xFromDate(p.startDate, pxm);
+  const x2 = xFromDate(p.endDate, pxm);
+  return { x1: Math.min(x1, x2), x2: Math.max(x1, x2) };
+}
+
+/* ---------- 렌더: 눈금자 ---------- */
+function renderRuler(svg, pxm, height, opts = {}) {
+  const unit = opts.unit || State.zoom;
+  const g = el("g", { class: "ruler" });
+  g.appendChild(el("rect", { x: 0, y: 0, width: totalWidth(pxm), height: RULER_H, fill: "#f8fafc" }));
+  for (let y = YEAR_MIN; y <= YEAR_MAX; y++) {
+    const x = xFromYear(y, pxm);
+    g.appendChild(el("line", { x1: x, y1: 0, x2: x, y2: height, class: "grid-line year" }));
+    g.appendChild(el("text", { x: x + 2, y: 14, class: "tick-label year", text: String(y) }));
+    if (unit < 12) {
+      for (let m = unit; m < 12; m += unit) {
+        const xm = xFromMonthIndex((y - YEAR_MIN) * 12 + m, pxm);
+        g.appendChild(el("line", {
+          x1: xm, y1: RULER_H - 10, x2: xm, y2: height,
+          class: m % 6 === 0 ? "grid-line major" : "grid-line"
+        }));
+        if (pxm * unit >= 28)
+          g.appendChild(el("text", { x: xm + 2, y: RULER_H - 2, class: "tick-label", text: (m + 1) + "월" }));
+      }
+    }
+  }
+  const xEnd = xFromYear(YEAR_MAX, pxm) + 12 * pxm;
+  g.appendChild(el("line", { x1: xEnd, y1: 0, x2: xEnd, y2: height, class: "grid-line year" }));
+  svg.appendChild(g);
+}
+
+/* ---------- 렌더: 기간 ---------- */
+function periodLabelText(p) {
+  const s = (p.startDate || "").slice(0, 10);
+  const e = (p.endDate   || "").slice(0, 10);
+  return `${p.title || "기간"} (${s} ~ ${e})`;
+}
+function renderPeriods(svg, pxm, yStart) {
+  const periods = State.data.periods;
+  const segs = periods.map(p => { const b = periodBounds(p, pxm); return { id: p.id, x1: b.x1, x2: b.x2 }; });
+  const { rowMap, rowCount } = assignRows(segs);
+  const g = el("g", { class: "periods" });
+  const positions = {};
+  periods.forEach(p => {
+    const r = rowMap[p.id] || 0;
+    const { x1, x2 } = periodBounds(p, pxm);
+    const y = yStart + r * (PERIOD_H + PERIOD_PAD);
+    const w = Math.max(8, x2 - x1);
+    positions[p.id] = { x: x1 + w / 2, y };
+    const color = getItemColor(p, "period");
+    const rect = el("rect", {
+      x: x1, y, width: w, height: PERIOD_H,
+      rx: 4, fill: color,
+      "fill-opacity": "0.82",
+      stroke: "#1f2937", "stroke-opacity": "0.18",
+      class: "period-rect"
+    });
+    rect.addEventListener("click", () => openPeriodDetail(p));
+    rect.addEventListener("contextmenu", e => { e.preventDefault(); openPeriodEdit(p); });
+    g.appendChild(rect);
+    g.appendChild(el("text", { x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: periodLabelText(p) }));
+  });
+  svg.appendChild(g);
+  return { yEnd: yStart + rowCount * (PERIOD_H + PERIOD_PAD), positions };
+}
+
+/* ---------- 렌더: 포인트 ---------- */
+function renderEvents(svg, pxm, yStart) {
+  const evs = State.data.events;
+  const segs = evs.map(e => {
+    const x = xFromDate(e.date, pxm);
+    return { id: e.id, x1: x, x2: x + estimateEventWidth(e) };
+  });
+  const { rowMap, rowCount } = assignRows(segs);
+  const g = el("g", { class: "events" });
+  const positions = {};
+  evs.forEach(e => {
+    const r = rowMap[e.id] || 0;
+    const x = xFromDate(e.date, pxm);
+    const y = yStart + r * EVENT_ROW_H + 14;
+    positions[e.id] = { x, y };
+    g.appendChild(el("line", { x1: x, y1: yStart - 4, x2: x, y2: y, stroke: "#94a3b8", "stroke-width": 1, "stroke-dasharray": "2 3" }));
+    const color = getItemColor(e, "event");
+    const circle = el("circle", { cx: x, cy: y, r: 5, fill: color, stroke: "#fff", "stroke-width": 2, class: "event-marker" });
+    circle.addEventListener("click", () => openEventDetail(e));
+    circle.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
+    g.appendChild(circle);
+    const t = el("text", { x: x + 8, y: y + 4, class: "event-label", text: e.title || "(제목 없음)", style: "cursor:pointer" });
+    t.addEventListener("click", () => openEventDetail(e));
+    t.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
+    g.appendChild(t);
+  });
+  svg.appendChild(g);
+  return { yEnd: yStart + rowCount * EVENT_ROW_H, positions };
+}
+
+/* ---------- 렌더: 흐름 ---------- */
+function ensureArrowDefs(svg, color, id) {
+  let defs = svg.querySelector("defs");
+  if (!defs) { defs = el("defs"); svg.appendChild(defs); }
+  if (svg.querySelector(`#${id}`)) return;
+  const marker = el("marker", { id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
+  marker.appendChild(el("path", { d: "M0,0 L10,5 L0,10 Z", fill: color }));
+  defs.appendChild(marker);
+}
+function flowItems(f) {
+  if (f.items) return f.items;
+  return (f.eventIds || []).map(id => ({ type: "event", id }));
+}
+function renderFlows(svg, positions) {
+  const g = el("g", { class: "flows" });
+  State.data.flows.forEach(f => {
+    const pts = flowItems(f).map(it => positions[`${it.type}:${it.id}`]).filter(Boolean);
+    if (pts.length < 2) return;
+    const color = getItemColor(f, "flow");
+    const mid = "arr_" + f.id;
+    ensureArrowDefs(svg, color, mid);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const dx = b.x - a.x;
+      const midY = Math.min(a.y, b.y) - 40 - Math.min(60, Math.abs(dx) * 0.15);
+      const d = `M ${a.x} ${a.y - 6} Q ${(a.x + b.x) / 2} ${midY} ${b.x} ${b.y - 6}`;
+      const path = el("path", { d, class: "flow-path", fill: "none", stroke: color, "stroke-width": 2, "stroke-linecap": "round", "marker-end": `url(#${mid})`, "data-flow": f.id });
+      path.addEventListener("mouseenter", e => showTooltip(e, f));
+      path.addEventListener("mousemove", moveTooltip);
+      path.addEventListener("mouseleave", hideTooltip);
+      path.addEventListener("click", () => openFlowEdit(f));
+      g.appendChild(path);
+    }
+  });
+  svg.appendChild(g);
+}
+
+function showTooltip(e, flow) {
+  const t = $("#tooltip");
+  t.innerHTML = `<b>${escapeHtml(flow.title || "(무제 흐름)")}</b>${flow.description ? escapeHtml(flow.description) : ""}`;
+  t.classList.remove("hidden");
+  moveTooltip(e);
+}
+function moveTooltip(e) {
+  const t = $("#tooltip");
+  t.style.left = (e.clientX + 14) + "px";
+  t.style.top  = (e.clientY + 14) + "px";
+}
+function hideTooltip() { $("#tooltip").classList.add("hidden"); }
+
+/* ---------- 전체 render ---------- */
+function combinePositions(periodPos, eventPos) {
+  const out = {};
+  for (const [id, p] of Object.entries(periodPos)) out["period:" + id] = p;
+  for (const [id, p] of Object.entries(eventPos))  out["event:"  + id] = p;
+  return out;
+}
+function render() {
+  const svg = $("#timeline-svg");
+  svg.innerHTML = "";
+  const pxm = getPxPerMonth();
+  const width = totalWidth(pxm);
+  const periodSegs = State.data.periods.map(p => { const b = periodBounds(p, pxm); return { id: p.id, x1: b.x1, x2: b.x2 }; });
+  const periodRows = assignRows(periodSegs).rowCount;
+  const eventSegs  = State.data.events.map(e => ({ id: e.id, x1: xFromDate(e.date, pxm), x2: xFromDate(e.date, pxm) + estimateEventWidth(e) }));
+  const eventRows  = assignRows(eventSegs).rowCount;
+  const height = RULER_H + TOP_PAD + periodRows * (PERIOD_H + PERIOD_PAD) + LANE_GAP + eventRows * EVENT_ROW_H + 40;
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  renderRuler(svg, pxm, height);
+  const pY = RULER_H + TOP_PAD;
+  const { yEnd: pBottom, positions: periodPos } = renderPeriods(svg, pxm, pY);
+  const eY = pBottom + LANE_GAP;
+  const { positions: eventPos } = renderEvents(svg, pxm, eY);
+  renderFlows(svg, combinePositions(periodPos, eventPos));
+  renderLegend();
+}
+
+/* PART 4–5는 아래에 이어집니다 */
