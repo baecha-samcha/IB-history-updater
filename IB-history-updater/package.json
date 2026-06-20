@@ -1,0 +1,18 @@
+{
+  "name": "ib-history-updater",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "build": "node scripts/build.js",
+    "db:migrate": "node scripts/migrate.js",
+    "test:integration": "node tests/integration.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.1",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0"
+  }
+}

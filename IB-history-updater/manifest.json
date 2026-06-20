@@ -1,0 +1,10 @@
+{
+  "name": "IB History Timeline",
+  "short_name": "IB Timeline",
+  "description": "1850–2000 개인 역사 타임라인",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#102a43",
+  "theme_color": "#1f2937",
+  "icons": []
+}
