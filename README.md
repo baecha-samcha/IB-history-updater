@@ -12,6 +12,8 @@ npm start
 
 The existing UI and offline browser cache remain unchanged. Authentication and database access go through the Express API, so `DATABASE_URL` stays server-side.
 
+All authenticated accounts share one timeline workspace. Changes are saved per item and other open clients refresh the shared workspace automatically within about three seconds.
+
 ## Validation
 
 ```powershell

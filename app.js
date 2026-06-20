@@ -5,6 +5,8 @@
 
 /* ---------- Server API ---------- */
 const SESSION_KEY = "ibhistory.session.v1";
+const SHARED_CACHE_USER = "__shared__";
+const PENDING_OPERATIONS_KEY = "ibhistory.pending-operations.v1";
 
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
@@ -150,6 +152,7 @@ const State = {
   session: null,
   user: null,      // username 문자열
   data: emptyData(),
+  version: -1,
   zoom: 6,
 };
 
@@ -215,19 +218,19 @@ async function enterApp() {
     try {
       await loadFromDatabase();
       const cache = loadCache();
-      cache[State.user] = State.data;
+      cache[SHARED_CACHE_USER] = State.data;
       saveCache(cache);
       updateSyncStatus("synced");
     } catch (err) {
       console.warn("Database load failed, using cache:", err);
       const cache = loadCache();
-      State.data = cache[State.user] || emptyData();
+      State.data = cache[SHARED_CACHE_USER] || emptyData();
       migrateData(State.data);
       updateSyncStatus("offline");
     }
   } else {
     const cache = loadCache();
-    State.data = cache[State.user] || emptyData();
+    State.data = cache[SHARED_CACHE_USER] || emptyData();
     migrateData(State.data);
     updateSyncStatus("offline");
   }
@@ -238,13 +241,44 @@ async function enterApp() {
 async function loadFromDatabase() {
   const response = await api("/data");
   State.data = response.data;
+  State.version = response.version;
   migrateData(State.data);
 }
 
 /* ---------- PostgreSQL 동기화 ---------- */
+let _pendingOperations = (() => {
+  try { return JSON.parse(localStorage.getItem(PENDING_OPERATIONS_KEY)) || []; }
+  catch { return []; }
+})();
+let _syncInFlight = false;
+
+function savePendingOperations() {
+  localStorage.setItem(PENDING_OPERATIONS_KEY, JSON.stringify(_pendingOperations));
+}
+
 async function syncToDatabase() {
-  if (!navigator.onLine || !State.session) return false;
-  await api("/data", { method: "PUT", body: JSON.stringify({ data: State.data }) });
+  if (!navigator.onLine || !State.session || !_pendingOperations.length) return false;
+  const operations = _pendingOperations;
+  _pendingOperations = [];
+  savePendingOperations();
+  _syncInFlight = true;
+  try {
+    const response = await api("/data/batch", { method: "POST", body: JSON.stringify({ operations }) });
+    State.version = response.version;
+    if (!_pendingOperations.length) {
+      await loadFromDatabase();
+      const cache = loadCache();
+      cache[SHARED_CACHE_USER] = State.data;
+      saveCache(cache);
+      render();
+    }
+  } catch (error) {
+    _pendingOperations = [...operations, ..._pendingOperations];
+    savePendingOperations();
+    throw error;
+  } finally {
+    _syncInFlight = false;
+  }
   return true;
 }
 
@@ -252,6 +286,7 @@ let _syncTimer = null;
 function schedulePushSync() {
   if (_syncTimer) clearTimeout(_syncTimer);
   _syncTimer = setTimeout(async () => {
+    _syncTimer = null;
     updateSyncStatus("syncing");
     try {
       const ok = await syncToDatabase();
@@ -263,12 +298,42 @@ function schedulePushSync() {
   }, 800);
 }
 
-function persistUserData() {
+function persistUserData(operations = []) {
   if (!State.user) return;
   const cache = loadCache();
-  cache[State.user] = State.data;
+  cache[SHARED_CACHE_USER] = State.data;
   saveCache(cache);
+  operations.forEach(operation => {
+    const id = operation.id || operation.item?.id;
+    _pendingOperations = _pendingOperations.filter(current =>
+      current.entity !== operation.entity || (current.id || current.item?.id) !== id
+    );
+    _pendingOperations.push(operation);
+  });
+  savePendingOperations();
   schedulePushSync();
+}
+
+function colorTagOperations() {
+  return State.data.colorTags.map(item => ({ action: "upsert", entity: "colorTag", item }));
+}
+
+async function pollDatabase() {
+  if (!navigator.onLine || !State.session || _syncTimer || _syncInFlight || _pendingOperations.length) return;
+  try {
+    const response = await api(`/data?version=${State.version}`);
+    if (response.unchanged) return;
+    State.data = response.data;
+    State.version = response.version;
+    migrateData(State.data);
+    const cache = loadCache();
+    cache[SHARED_CACHE_USER] = State.data;
+    saveCache(cache);
+    render();
+    updateSyncStatus("synced");
+  } catch (error) {
+    console.warn("Workspace refresh failed:", error);
+  }
 }
 
 /* ===========================================================
@@ -697,7 +762,7 @@ function openPeriodEdit(existing = null) {
     footer.push(mkBtn("삭제", "danger", () => {
       State.data.periods = State.data.periods.filter(x => x.id !== p.id);
       State.data.flows.forEach(fl => { fl.items = (fl.items || []).filter(it => !(it.type === "period" && it.id === p.id)); });
-      persistUserData(); render(); closeModal();
+      persistUserData([{ action: "delete", entity: "period", id: p.id }]); render(); closeModal();
     }));
   }
   footer.push(mkBtn("취소", "cancel", closeModal));
@@ -710,7 +775,7 @@ function openPeriodEdit(existing = null) {
     const obj = { id: p.id, title: f_title.value.trim(), colorTagIds: pTagIds, startDate: sd, endDate: ed, figures: f_fig.value.trim(), source: f_src.value.trim(), photo: photoData };
     const idx = State.data.periods.findIndex(x => x.id === obj.id);
     if (idx >= 0) State.data.periods[idx] = obj; else State.data.periods.push(obj);
-    persistUserData(); render(); closeModal();
+    persistUserData([...colorTagOperations(), { action: "upsert", entity: "period", item: obj }]); render(); closeModal();
   }));
   openModal({ title: existing ? "기간 편집" : "기간 추가", body, footer });
 }
@@ -779,7 +844,7 @@ function openEventEdit(existing = null) {
     footer.push(mkBtn("삭제", "danger", () => {
       State.data.events = State.data.events.filter(x => x.id !== e0.id);
       State.data.flows.forEach(fl => { fl.items = (fl.items || []).filter(it => !(it.type === "event" && it.id === e0.id)); });
-      persistUserData(); render(); closeModal();
+      persistUserData([{ action: "delete", entity: "event", id: e0.id }]); render(); closeModal();
     }));
   }
   footer.push(mkBtn("취소", "cancel", closeModal));
@@ -789,7 +854,7 @@ function openEventEdit(existing = null) {
     const obj = { id: e0.id, title: f_title.value.trim() || "(무제)", description: f_desc.value.trim(), date: f_date.value, colorTagIds: eTagIds, figures: f_fig.value.trim(), source: f_src.value.trim(), photo };
     const idx = State.data.events.findIndex(x => x.id === obj.id);
     if (idx >= 0) State.data.events[idx] = obj; else State.data.events.push(obj);
-    persistUserData(); render(); closeModal();
+    persistUserData([...colorTagOperations(), { action: "upsert", entity: "event", item: obj }]); render(); closeModal();
   }));
   openModal({ title: existing ? "포인트 편집" : "포인트 추가", body, footer });
 }
@@ -845,7 +910,7 @@ function openFlowEdit(existing = null) {
   if (existing) {
     footer.push(mkBtn("삭제", "danger", () => {
       State.data.flows = State.data.flows.filter(x => x.id !== f0.id);
-      persistUserData(); render(); closeModal();
+      persistUserData([{ action: "delete", entity: "flow", id: f0.id }]); render(); closeModal();
     }));
   }
   footer.push(mkBtn("취소", "cancel", closeModal));
@@ -855,7 +920,7 @@ function openFlowEdit(existing = null) {
     const obj = { id: f0.id, title: f_title.value.trim() || "(무제 흐름)", description: f_desc.value.trim(), colorTagIds: fTagIds, items };
     const idx = State.data.flows.findIndex(x => x.id === obj.id);
     if (idx >= 0) State.data.flows[idx] = obj; else State.data.flows.push(obj);
-    persistUserData(); render(); closeModal();
+    persistUserData([...colorTagOperations(), { action: "upsert", entity: "flow", item: obj }]); render(); closeModal();
   }));
   openModal({ title: existing ? "흐름 편집" : "흐름 추가", body, footer });
 }
@@ -1038,10 +1103,15 @@ async function boot() {
     State.session = null;
     localStorage.removeItem(SESSION_KEY);
   }
+  if (State.session && _pendingOperations.length) schedulePushSync();
   // 오프라인 → 온라인 전환 시 자동 동기화
   window.addEventListener("online", () => {
-    if (State.session) schedulePushSync();
+    if (State.session) {
+      if (_pendingOperations.length) schedulePushSync();
+      else pollDatabase();
+    }
   });
+  setInterval(pollDatabase, 3000);
 }
 
 document.addEventListener("DOMContentLoaded", boot);
