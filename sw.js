@@ -1,5 +1,5 @@
 /* IB History Timeline — Service Worker */
-const CACHE = "ibhistory-v4";
+const CACHE = "ibhistory-v5";
 const ASSETS = [
   "./",
   "./index.html",
@@ -26,6 +26,7 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
+  if (new URL(req.url).pathname.startsWith("/api/")) return;
   e.respondWith(
     fetch(req)
       .then(res => {

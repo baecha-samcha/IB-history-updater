@@ -1,12 +1,19 @@
 /* ===========================================================
    IB History Timeline — app.js
-   Part 1/5: Supabase + 상수 + 유틸 + 캐시 + 데이터 모델
+   Part 1/5: API + 상수 + 유틸 + 캐시 + 데이터 모델
    =========================================================== */
 
-/* ---------- Supabase ---------- */
-const SUPA_URL = "https://kwrfxmcxhejekbewlreb.supabase.co";
-const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3cmZ4bWN4aGVqZWtiZXdscmViIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY1MDk3MjEsImV4cCI6MjA5MjA4NTcyMX0.pdkt7ujtdFzIvLXLtMVwkGu-881hZbnblmvaiTgNPtU";
-const sb = supabase.createClient(SUPA_URL, SUPA_KEY);
+/* ---------- Server API ---------- */
+const SESSION_KEY = "ibhistory.session.v1";
+
+async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (State.session?.token) headers.Authorization = `Bearer ${State.session.token}`;
+  const response = await fetch(`/api${path}`, { ...options, headers });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  return body;
+}
 
 /* ---------- 1. 상수 & 유틸 ---------- */
 const YEAR_MIN = 1850;
@@ -135,12 +142,12 @@ function migrateData(data) {
 }
 
 /* ===========================================================
-   Part 2/5: 전역 상태 + Supabase 인증 + 동기화
+   Part 2/5: 전역 상태 + API 인증 + 동기화
    =========================================================== */
 
 /* ---------- 전역 상태 ---------- */
 const State = {
-  session: null,   // Supabase session 객체
+  session: null,
   user: null,      // username 문자열
   data: emptyData(),
   zoom: 6,
@@ -154,26 +161,22 @@ function updateSyncStatus(s) {
   el2.textContent = map[s] || "";
 }
 
-/* ---------- Supabase 인증 ---------- */
+/* ---------- API 인증 ---------- */
 function showAuthMsg(msg, ok = false) {
   const n = $("#auth-msg");
   n.textContent = msg || "";
   n.style.color = ok ? "#0a7" : "#b33";
 }
 
-function usernameToEmail(u) {
-  return u.toLowerCase().replace(/[^a-z0-9._-]/g, "_") + "@ibhistory.app";
-}
-
 async function handleRegister() {
   const u = $("#auth-username").value.trim();
   const p = $("#auth-password").value;
   if (!u || !p) return showAuthMsg("아이디/비밀번호를 입력하세요");
-  const email = usernameToEmail(u);
   showAuthMsg("가입 중...");
-  const { error } = await sb.auth.signUp({ email, password: p });
-  if (error) return showAuthMsg(error.message);
-  showAuthMsg("가입 완료. 로그인 해주세요.", true);
+  try {
+    await api("/auth/register", { method: "POST", body: JSON.stringify({ username: u, password: p }) });
+    showAuthMsg("가입 완료. 로그인 해주세요.", true);
+  } catch (error) { showAuthMsg(error.message); }
 }
 
 async function handleLogin(e) {
@@ -181,17 +184,19 @@ async function handleLogin(e) {
   const u = $("#auth-username").value.trim();
   const p = $("#auth-password").value;
   if (!u || !p) return showAuthMsg("아이디/비밀번호를 입력하세요");
-  const email = usernameToEmail(u);
   showAuthMsg("로그인 중...");
-  const { data, error } = await sb.auth.signInWithPassword({ email, password: p });
-  if (error) return showAuthMsg(error.message);
-  State.session = data.session;
-  State.user = u;
-  await enterApp();
+  try {
+    const data = await api("/auth/login", { method: "POST", body: JSON.stringify({ username: u, password: p }) });
+    State.session = { token: data.token, username: data.username };
+    State.user = data.username;
+    localStorage.setItem(SESSION_KEY, JSON.stringify(State.session));
+    await enterApp();
+  } catch (error) { showAuthMsg(error.message); }
 }
 
 async function handleLogout() {
-  await sb.auth.signOut();
+  try { await api("/auth/logout", { method: "POST" }); } catch {}
+  localStorage.removeItem(SESSION_KEY);
   State.session = null;
   State.user = null;
   State.data = emptyData();
@@ -208,13 +213,13 @@ async function enterApp() {
   if (navigator.onLine) {
     updateSyncStatus("syncing");
     try {
-      await loadFromSupabase();
+      await loadFromDatabase();
       const cache = loadCache();
       cache[State.user] = State.data;
       saveCache(cache);
       updateSyncStatus("synced");
     } catch (err) {
-      console.warn("Supabase load failed, using cache:", err);
+      console.warn("Database load failed, using cache:", err);
       const cache = loadCache();
       State.data = cache[State.user] || emptyData();
       migrateData(State.data);
@@ -229,90 +234,17 @@ async function enterApp() {
   render();
 }
 
-/* ---------- Supabase 데이터 불러오기 ---------- */
-async function loadFromSupabase() {
-  const userId = State.session.user.id;
-  const [ct, p, e, f, fi] = await Promise.all([
-    sb.from("color_tags").select("*").eq("user_id", userId),
-    sb.from("periods").select("*").eq("user_id", userId),
-    sb.from("events").select("*").eq("user_id", userId),
-    sb.from("flows").select("*").eq("user_id", userId),
-    sb.from("flow_items").select("*"),
-  ]);
-  State.data = {
-    colorTags: (ct.data || []).map(r => ({ id: r.id, name: r.name, color: r.color })),
-    periods: (p.data || []).map(r => ({
-      id: r.id, title: r.title,
-      startDate: r.start_date, endDate: r.end_date,
-      figures: r.figures, source: r.source, photo: r.photo,
-      colorTagIds: r.color_tag_ids || []
-    })),
-    events: (e.data || []).map(r => ({
-      id: r.id, title: r.title, date: r.event_date,
-      description: r.description, figures: r.figures,
-      source: r.source, photo: r.photo,
-      colorTagIds: r.color_tag_ids || []
-    })),
-    flows: (f.data || []).map(r => ({
-      id: r.id, title: r.title, description: r.description,
-      colorTagIds: r.color_tag_ids || [],
-      items: (fi.data || [])
-        .filter(i => i.flow_id === r.id)
-        .sort((a, b) => a.position - b.position)
-        .map(i => ({ type: i.item_type, id: i.item_id }))
-    })),
-  };
+/* ---------- PostgreSQL 데이터 불러오기 ---------- */
+async function loadFromDatabase() {
+  const response = await api("/data");
+  State.data = response.data;
+  migrateData(State.data);
 }
 
-/* ---------- Supabase 동기화 (전체 교체) ---------- */
-async function syncToSupabase() {
+/* ---------- PostgreSQL 동기화 ---------- */
+async function syncToDatabase() {
   if (!navigator.onLine || !State.session) return false;
-  const userId = State.session.user.id;
-  // 기존 데이터 전체 삭제 (flow_items는 flows 삭제 시 CASCADE)
-  await Promise.all([
-    sb.from("flows").delete().eq("user_id", userId),
-    sb.from("periods").delete().eq("user_id", userId),
-    sb.from("events").delete().eq("user_id", userId),
-    sb.from("color_tags").delete().eq("user_id", userId),
-  ]);
-  // 새 데이터 삽입
-  if (State.data.colorTags.length)
-    await sb.from("color_tags").insert(
-      State.data.colorTags.map(t => ({ id: t.id, user_id: userId, name: t.name, color: t.color }))
-    );
-  if (State.data.periods.length)
-    await sb.from("periods").insert(
-      State.data.periods.map(p => ({
-        id: p.id, user_id: userId, title: p.title,
-        start_date: p.startDate, end_date: p.endDate,
-        figures: p.figures, source: p.source, photo: p.photo,
-        color_tag_ids: p.colorTagIds || []
-      }))
-    );
-  if (State.data.events.length)
-    await sb.from("events").insert(
-      State.data.events.map(e => ({
-        id: e.id, user_id: userId, title: e.title, event_date: e.date,
-        description: e.description, figures: e.figures,
-        source: e.source, photo: e.photo,
-        color_tag_ids: e.colorTagIds || []
-      }))
-    );
-  if (State.data.flows.length) {
-    await sb.from("flows").insert(
-      State.data.flows.map(f => ({
-        id: f.id, user_id: userId, title: f.title,
-        description: f.description, color_tag_ids: f.colorTagIds || []
-      }))
-    );
-    const rows = [];
-    State.data.flows.forEach(f =>
-      (f.items || []).forEach((it, idx) =>
-        rows.push({ flow_id: f.id, position: idx, item_type: it.type, item_id: it.id })
-      )
-    );
-    if (rows.length) await sb.from("flow_items").insert(rows);
-  }
+  await api("/data", { method: "PUT", body: JSON.stringify({ data: State.data }) });
   return true;
 }
 
@@ -322,7 +254,7 @@ function schedulePushSync() {
   _syncTimer = setTimeout(async () => {
     updateSyncStatus("syncing");
     try {
-      const ok = await syncToSupabase();
+      const ok = await syncToDatabase();
       updateSyncStatus(ok ? "synced" : "offline");
     } catch (err) {
       console.error("Sync error:", err);
@@ -1088,12 +1020,23 @@ function wireApp() {
 async function boot() {
   wireAuth();
   wireApp();
-  // 세션 복원 (Supabase SDK가 localStorage에 저장한 세션)
-  const { data: { session } } = await sb.auth.getSession();
-  if (session) {
-    State.session = session;
-    State.user = session.user.email.split("@")[0];
-    await enterApp();
+  try {
+    State.session = JSON.parse(localStorage.getItem(SESSION_KEY));
+    if (State.session?.token) {
+      if (navigator.onLine) {
+        const current = await api("/auth/me");
+        State.user = current.username;
+        State.session.username = current.username;
+        localStorage.setItem(SESSION_KEY, JSON.stringify(State.session));
+      } else {
+        State.user = State.session.username;
+      }
+      if (!State.user) throw new Error("Session username is missing");
+      await enterApp();
+    }
+  } catch {
+    State.session = null;
+    localStorage.removeItem(SESSION_KEY);
   }
   // 오프라인 → 온라인 전환 시 자동 동기화
   window.addEventListener("online", () => {
