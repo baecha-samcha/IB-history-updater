@@ -207,7 +207,7 @@ small  { font-size: 12px; color: var(--warm-silver); }
 .zoom-label { font-size: 11px; font-weight: 600; letter-spacing: 1.08px;
   text-transform: uppercase; color: var(--warm-silver); }
 .seg {
-  display: flex;
+  display: flex; flex-wrap: wrap;
   background: var(--oat-light);
   border: 1px solid var(--oat-border);
   border-radius: var(--r-btn); overflow: hidden;
@@ -286,6 +286,7 @@ small  { font-size: 12px; color: var(--warm-silver); }
 .period-label       { font: 600 11px var(--font); fill: var(--clay-black); pointer-events: none; }
 .event-label        { font: 13px var(--font); fill: var(--clay-black); pointer-events: none; }
 .flow-path          { fill: none; stroke-linecap: round; cursor: pointer; }
+.flow-label         { font: 600 11px var(--font); fill: var(--charcoal); cursor: pointer; paint-order: stroke; stroke: white; stroke-width: 3px; }
 .flow-path:hover    { filter: drop-shadow(0 0 3px currentColor); }
 
 /* ==============================================================
@@ -448,6 +449,9 @@ small  { font-size: 12px; color: var(--warm-silver); }
   transform: rotateZ(-8deg) translateY(-4px);
   box-shadow: var(--shadow-hard);
 }
+.tag-manager-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.tag-manager-row input[type="color"] { width: 42px; height: 36px; flex: 0 0 auto; }
+.tag-manager-row input[type="text"] { flex: 1; }
 /* 동기화 상태 */
 .sync-status {
   font-size: 12px; color: var(--warm-silver);

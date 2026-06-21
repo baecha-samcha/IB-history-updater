@@ -23,7 +23,7 @@ const YEAR_MAX = 2000;
 const TOTAL_MONTHS = (YEAR_MAX - YEAR_MIN + 1) * 12;
 const CACHE_KEY = "ibhistory.cache.v2";
 
-const PX_PER_MONTH = { 12: 3, 6: 6, 3: 12, 1: 36 };
+const PX_PER_MONTH = { 12: 3, 6: 6, 3: 12, 1: 36, 0.5: 72, 0.333: 108, 0.1: 360, 0.033: 1080 };
 
 const RULER_H    = 46;
 const LANE_GAP   = 18;
@@ -63,6 +63,11 @@ function parseYMD(s) {
   if (!s) return null;
   const [y, m, d] = s.split("-").map(Number);
   return { y, m: m || 1, d: d || 1 };
+}
+function normalizeDate(value, fallback = "") {
+  if (!value) return fallback;
+  const match = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : fallback;
 }
 function ymdToMonthIndex(ymd) {
   return (ymd.y - YEAR_MIN) * 12 + (ymd.m - 1) + (ymd.d - 1) / 31;
@@ -127,10 +132,15 @@ function migrateData(data) {
       const color  = p.color || "#94a3b8";
       p.colorTagIds = tagArr.map(t => getOrCreate(t, color));
     }
+    p.startDate = normalizeDate(p.startDate, `${YEAR_MIN}-01-01`);
+    p.endDate = normalizeDate(p.endDate, p.startDate);
   });
 
   // events: colorTagIds 없으면 빈 배열
-  data.events.forEach(e => { e.colorTagIds = e.colorTagIds || []; });
+  data.events.forEach(e => {
+    e.colorTagIds = e.colorTagIds || [];
+    e.date = normalizeDate(e.date, `${YEAR_MIN}-01-01`);
+  });
 
   // flows: 구형 color+tags+eventIds → colorTagIds+items
   data.flows.forEach(f => {
@@ -244,7 +254,6 @@ async function loadFromDatabase() {
   State.version = response.version;
   migrateData(State.data);
 }
-
 /* ---------- PostgreSQL 동기화 ---------- */
 let _pendingOperations = (() => {
   try { return JSON.parse(localStorage.getItem(PENDING_OPERATIONS_KEY)) || []; }
@@ -476,6 +485,23 @@ function getItemColor(item, type) {
   return type === "event" ? "#1d4ed8" : type === "flow" ? "#ef4444" : "#94a3b8";
 }
 
+function getItemColors(item, type) {
+  const colors = (item.colorTagIds || [])
+    .map(id => State.data.colorTags.find(t => t.id === id)?.color)
+    .filter(Boolean);
+  return colors.length ? colors : [getItemColor(item, type)];
+}
+function getItemColorBackground(item, type) {
+  const colors = getItemColors(item, type);
+  if (colors.length === 1) return colors[0];
+  const stops = colors.flatMap((color, index) => {
+    const start = index * 100 / colors.length;
+    const end = (index + 1) * 100 / colors.length;
+    return [`${color} ${start}%`, `${color} ${end}%`];
+  });
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
+}
+
 /* ---------- 좌표 & 레이아웃 ---------- */
 function getPxPerMonth(zoom = State.zoom) { return PX_PER_MONTH[zoom] || 6; }
 function xFromMonthIndex(mi, pxm = getPxPerMonth()) { return LEFT_PAD + mi * pxm; }
@@ -506,6 +532,9 @@ function periodBounds(p, pxm) {
   const x2 = xFromDate(p.endDate, pxm);
   return { x1: Math.min(x1, x2), x2: Math.max(x1, x2) };
 }
+function estimatePeriodLabelWidth(p) {
+  return Math.max(80, periodLabelText(p).length * 7 + 16);
+}
 
 /* ---------- 렌더: 눈금자 ---------- */
 function renderRuler(svg, pxm, height, opts = {}) {
@@ -516,7 +545,7 @@ function renderRuler(svg, pxm, height, opts = {}) {
     const x = xFromYear(y, pxm);
     g.appendChild(el("line", { x1: x, y1: 0, x2: x, y2: height, class: "grid-line year" }));
     g.appendChild(el("text", { x: x + 2, y: 14, class: "tick-label year", text: String(y) }));
-    if (unit < 12) {
+    if (unit >= 1 && unit < 12) {
       for (let m = unit; m < 12; m += unit) {
         const xm = xFromMonthIndex((y - YEAR_MIN) * 12 + m, pxm);
         g.appendChild(el("line", {
@@ -525,6 +554,19 @@ function renderRuler(svg, pxm, height, opts = {}) {
         }));
         if (pxm * unit >= 28)
           g.appendChild(el("text", { x: xm + 2, y: RULER_H - 2, class: "tick-label", text: (m + 1) + "월" }));
+      }
+    } else if (unit < 1) {
+      const dayStep = unit === 0.5 ? 15 : unit === 0.333 ? 10 : unit === 0.1 ? 3 : 1;
+      for (let month = 1; month <= 12; month++) {
+        const days = new Date(Date.UTC(y, month, 0)).getUTCDate();
+        const monthX = xFromDate(`${y}-${String(month).padStart(2, "0")}-01`, pxm);
+        g.appendChild(el("line", { x1: monthX, y1: RULER_H - 14, x2: monthX, y2: height, class: "grid-line major" }));
+        g.appendChild(el("text", { x: monthX + 2, y: RULER_H - 3, class: "tick-label", text: `${month}월` }));
+        for (let day = 1 + dayStep; day <= days; day += dayStep) {
+          const xDay = xFromDate(`${y}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`, pxm);
+          g.appendChild(el("line", { x1: xDay, y1: RULER_H - 8, x2: xDay, y2: height, class: "grid-line" }));
+          if (pxm * unit >= 28) g.appendChild(el("text", { x: xDay + 2, y: RULER_H - 3, class: "tick-label", text: String(day) }));
+        }
       }
     }
   }
@@ -539,43 +581,45 @@ function periodLabelText(p) {
   const e = (p.endDate   || "").slice(0, 10);
   return `${p.title || "기간"} (${s} ~ ${e})`;
 }
-function renderPeriods(svg, pxm, yStart) {
+function renderPeriods(svg, pxm, yStart, layout = null) {
   const periods = State.data.periods;
   const segs = periods.map(p => { const b = periodBounds(p, pxm); return { id: p.id, x1: b.x1, x2: b.x2 }; });
-  const { rowMap, rowCount } = assignRows(segs);
+  const { rowMap, rowCount } = layout || assignRows(segs);
   const g = el("g", { class: "periods" });
   const positions = {};
   periods.forEach(p => {
     const r = rowMap[p.id] || 0;
     const { x1, x2 } = periodBounds(p, pxm);
-    const y = yStart + r * (PERIOD_H + PERIOD_PAD);
+    const y = yStart + r * EVENT_ROW_H;
     const w = Math.max(8, x2 - x1);
     positions[p.id] = { x: x1 + w / 2, y };
-    const color = getItemColor(p, "period");
-    const rect = el("rect", {
-      x: x1, y, width: w, height: PERIOD_H,
-      rx: 4, fill: color,
-      "fill-opacity": "0.82",
-      stroke: "#1f2937", "stroke-opacity": "0.18",
-      class: "period-rect"
+    const colors = getItemColors(p, "period");
+    colors.forEach((color, index) => {
+      const stripeW = w / colors.length;
+      const rect = el("rect", {
+        x: x1 + index * stripeW, y, width: stripeW + 0.5, height: PERIOD_H,
+        rx: colors.length === 1 ? 4 : 0, fill: color,
+        "fill-opacity": "0.82", stroke: "#1f2937", "stroke-opacity": "0.18",
+        class: "period-rect"
+      });
+      rect.addEventListener("click", () => openPeriodDetail(p));
+      rect.addEventListener("contextmenu", e => { e.preventDefault(); openPeriodEdit(p); });
+      g.appendChild(rect);
     });
-    rect.addEventListener("click", () => openPeriodDetail(p));
-    rect.addEventListener("contextmenu", e => { e.preventDefault(); openPeriodEdit(p); });
-    g.appendChild(rect);
     g.appendChild(el("text", { x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: periodLabelText(p) }));
   });
   svg.appendChild(g);
-  return { yEnd: yStart + rowCount * (PERIOD_H + PERIOD_PAD), positions };
+  return { yEnd: yStart + rowCount * EVENT_ROW_H, positions };
 }
 
 /* ---------- 렌더: 포인트 ---------- */
-function renderEvents(svg, pxm, yStart) {
+function renderEvents(svg, pxm, yStart, layout = null) {
   const evs = State.data.events;
   const segs = evs.map(e => {
     const x = xFromDate(e.date, pxm);
     return { id: e.id, x1: x, x2: x + estimateEventWidth(e) };
   });
-  const { rowMap, rowCount } = assignRows(segs);
+  const { rowMap, rowCount } = layout || assignRows(segs);
   const g = el("g", { class: "events" });
   const positions = {};
   evs.forEach(e => {
@@ -584,12 +628,14 @@ function renderEvents(svg, pxm, yStart) {
     const y = yStart + r * EVENT_ROW_H + 14;
     positions[e.id] = { x, y };
     g.appendChild(el("line", { x1: x, y1: yStart - 4, x2: x, y2: y, stroke: "#94a3b8", "stroke-width": 1, "stroke-dasharray": "2 3" }));
-    const color = getItemColor(e, "event");
-    const circle = el("circle", { cx: x, cy: y, r: 5, fill: color, stroke: "#fff", "stroke-width": 2, class: "event-marker" });
-    circle.addEventListener("click", () => openEventDetail(e));
-    circle.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
-    g.appendChild(circle);
-    const t = el("text", { x: x + 8, y: y + 4, class: "event-label", text: e.title || "(제목 없음)", style: "cursor:pointer" });
+    const colors = getItemColors(e, "event");
+    colors.forEach((color, index) => {
+      const circle = el("circle", { cx: x + index * 7, cy: y, r: 5, fill: color, stroke: "#fff", "stroke-width": 1.5, class: "event-marker" });
+      circle.addEventListener("click", () => openEventDetail(e));
+      circle.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
+      g.appendChild(circle);
+    });
+    const t = el("text", { x: x + Math.max(8, colors.length * 7), y: y + 4, class: "event-label", text: e.title || "(제목 없음)", style: "cursor:pointer" });
     t.addEventListener("click", () => openEventDetail(e));
     t.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
     g.appendChild(t);
@@ -616,20 +662,28 @@ function renderFlows(svg, positions) {
   State.data.flows.forEach(f => {
     const pts = flowItems(f).map(it => positions[`${it.type}:${it.id}`]).filter(Boolean);
     if (pts.length < 2) return;
-    const color = getItemColor(f, "flow");
-    const mid = "arr_" + f.id;
-    ensureArrowDefs(svg, color, mid);
+    const colors = getItemColors(f, "flow");
     for (let i = 0; i < pts.length - 1; i++) {
       const a = pts[i], b = pts[i + 1];
       const dx = b.x - a.x;
       const midY = Math.min(a.y, b.y) - 40 - Math.min(60, Math.abs(dx) * 0.15);
-      const d = `M ${a.x} ${a.y - 6} Q ${(a.x + b.x) / 2} ${midY} ${b.x} ${b.y - 6}`;
-      const path = el("path", { d, class: "flow-path", fill: "none", stroke: color, "stroke-width": 2, "stroke-linecap": "round", "marker-end": `url(#${mid})`, "data-flow": f.id });
-      path.addEventListener("mouseenter", e => showTooltip(e, f));
-      path.addEventListener("mousemove", moveTooltip);
-      path.addEventListener("mouseleave", hideTooltip);
-      path.addEventListener("click", () => openFlowEdit(f));
-      g.appendChild(path);
+      colors.forEach((color, colorIndex) => {
+        const offset = (colorIndex - (colors.length - 1) / 2) * 4;
+        const markerId = `arr_${f.id}_${colorIndex}`;
+        ensureArrowDefs(svg, color, markerId);
+        const d = `M ${a.x} ${a.y - 6 + offset} Q ${(a.x + b.x) / 2} ${midY + offset} ${b.x} ${b.y - 6 + offset}`;
+        const path = el("path", { d, class: "flow-path", fill: "none", stroke: color, "stroke-width": 2, "stroke-linecap": "round", "marker-end": `url(#${markerId})`, "data-flow": f.id });
+        path.addEventListener("mouseenter", e => showTooltip(e, f));
+        path.addEventListener("mousemove", moveTooltip);
+        path.addEventListener("mouseleave", hideTooltip);
+        path.addEventListener("click", () => openFlowEdit(f));
+        g.appendChild(path);
+      });
+      if (i === 0) {
+        const title = el("text", { x: (a.x + b.x) / 2, y: midY - 7, class: "flow-label", "text-anchor": "middle", text: f.title || "(무제 흐름)" });
+        title.addEventListener("click", () => openFlowEdit(f));
+        g.appendChild(title);
+      }
     }
   });
   svg.appendChild(g);
@@ -655,24 +709,41 @@ function combinePositions(periodPos, eventPos) {
   for (const [id, p] of Object.entries(eventPos))  out["event:"  + id] = p;
   return out;
 }
+function getTimelineLayout(pxm) {
+  const segments = [
+    ...State.data.periods.map(p => {
+      const b = periodBounds(p, pxm);
+      return { id: `period:${p.id}`, x1: b.x1, x2: Math.max(b.x2, b.x1 + estimatePeriodLabelWidth(p)) };
+    }),
+    ...State.data.events.map(e => {
+      const x = xFromDate(e.date, pxm);
+      return { id: `event:${e.id}`, x1: x, x2: x + estimateEventWidth(e) };
+    })
+  ];
+  const combined = assignRows(segments);
+  const periodMap = {}, eventMap = {};
+  State.data.periods.forEach(p => { periodMap[p.id] = combined.rowMap[`period:${p.id}`] || 0; });
+  State.data.events.forEach(e => { eventMap[e.id] = combined.rowMap[`event:${e.id}`] || 0; });
+  return {
+    rowCount: combined.rowCount,
+    periodLayout: { rowMap: periodMap, rowCount: combined.rowCount },
+    eventLayout: { rowMap: eventMap, rowCount: combined.rowCount }
+  };
+}
 function render() {
   const svg = $("#timeline-svg");
   svg.innerHTML = "";
   const pxm = getPxPerMonth();
   const width = totalWidth(pxm);
-  const periodSegs = State.data.periods.map(p => { const b = periodBounds(p, pxm); return { id: p.id, x1: b.x1, x2: b.x2 }; });
-  const periodRows = assignRows(periodSegs).rowCount;
-  const eventSegs  = State.data.events.map(e => ({ id: e.id, x1: xFromDate(e.date, pxm), x2: xFromDate(e.date, pxm) + estimateEventWidth(e) }));
-  const eventRows  = assignRows(eventSegs).rowCount;
-  const height = RULER_H + TOP_PAD + periodRows * (PERIOD_H + PERIOD_PAD) + LANE_GAP + eventRows * EVENT_ROW_H + 40;
+  const layout = getTimelineLayout(pxm);
+  const height = RULER_H + TOP_PAD + layout.rowCount * EVENT_ROW_H + 60;
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   renderRuler(svg, pxm, height);
   const pY = RULER_H + TOP_PAD;
-  const { yEnd: pBottom, positions: periodPos } = renderPeriods(svg, pxm, pY);
-  const eY = pBottom + LANE_GAP;
-  const { positions: eventPos } = renderEvents(svg, pxm, eY);
+  const { positions: periodPos } = renderPeriods(svg, pxm, pY, layout.periodLayout);
+  const { positions: eventPos } = renderEvents(svg, pxm, pY, layout.eventLayout);
   renderFlows(svg, combinePositions(periodPos, eventPos));
   renderLegend();
 }
@@ -734,8 +805,8 @@ function openPeriodEdit(existing = null) {
   const p = existing || { id: uid(), colorTagIds: [], startDate: "1900-01-01", endDate: "1910-12-31", title: "", figures: "", photo: "", source: "" };
   const minD = `${YEAR_MIN}-01-01`, maxD = `${YEAR_MAX}-12-31`;
   const f_title = input("text", p.title, { placeholder: "예: 빅토리아 시대" });
-  const f_start = input("date", p.startDate || "1900-01-01", { min: minD, max: maxD });
-  const f_end   = input("date", p.endDate   || "1910-12-31", { min: minD, max: maxD });
+  const f_start = input("date", normalizeDate(p.startDate, "1900-01-01"), { min: minD, max: maxD });
+  const f_end   = input("date", normalizeDate(p.endDate, "1910-12-31"), { min: minD, max: maxD });
   let pTagIds = [...(p.colorTagIds || [])];
   const tagSel = colorTagSelector(pTagIds, ids => { pTagIds = ids; });
   const f_fig   = textarea(p.figures);
@@ -815,7 +886,7 @@ function openEventDetail(e) {
 function openEventEdit(existing = null) {
   const e0 = existing || { id: uid(), title: "", description: "", date: "1900-01-01", colorTagIds: [], figures: "", photo: "", source: "" };
   const f_title = input("text", e0.title, { placeholder: "예: 빅토리아 여왕 즉위" });
-  const f_date  = input("date", e0.date, { min: `${YEAR_MIN}-01-01`, max: `${YEAR_MAX}-12-31` });
+  const f_date  = input("date", normalizeDate(e0.date, "1900-01-01"), { min: `${YEAR_MIN}-01-01`, max: `${YEAR_MAX}-12-31` });
   const f_desc  = textarea(e0.description);
   let eTagIds = [...(e0.colorTagIds || [])];
   const tagSel = colorTagSelector(eTagIds, ids => { eTagIds = ids; });
@@ -930,7 +1001,7 @@ function renderLegend() {
   const lp = $("#list-periods"); lp.innerHTML = "";
   State.data.periods.slice().sort((a, b) => (a.startDate || "").localeCompare(b.startDate || "")).forEach(p => {
     const li = document.createElement("li");
-    const color = getItemColor(p, "period");
+    const color = getItemColorBackground(p, "period");
     const tags = (p.colorTagIds || []).map(id => {
       const ct = State.data.colorTags.find(t => t.id === id);
       return ct ? `<small style="color:${ct.color}">#${escapeHtml(ct.name)}</small>` : "";
@@ -945,7 +1016,7 @@ function renderLegend() {
   const le = $("#list-events"); le.innerHTML = "";
   State.data.events.slice().sort((a, b) => (a.date || "").localeCompare(b.date || "")).forEach(e => {
     const li = document.createElement("li");
-    const color = getItemColor(e, "event");
+    const color = getItemColorBackground(e, "event");
     const tags = (e.colorTagIds || []).map(id => {
       const ct = State.data.colorTags.find(t => t.id === id);
       return ct ? `<small style="color:${ct.color}">#${escapeHtml(ct.name)}</small>` : "";
@@ -960,7 +1031,7 @@ function renderLegend() {
   const lf = $("#list-flows"); lf.innerHTML = "";
   State.data.flows.forEach(f => {
     const li = document.createElement("li");
-    const color = getItemColor(f, "flow");
+    const color = getItemColorBackground(f, "flow");
     const count = flowItems(f).length;
     li.innerHTML = `<span class="swatch" style="background:${color}"></span><span>${escapeHtml(f.title || "(무제 흐름)")} <small>${count}개</small></span>`;
     li.addEventListener("click", () => openFlowEdit(f));
@@ -983,17 +1054,13 @@ function buildExportSVG({ startYear, endYear, unit }) {
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("xmlns", SVG_NS);
 
-  const allPeriodSegs = State.data.periods.map(p => { const b = periodBounds(p, pxm); return { id: p.id, x1: b.x1, x2: b.x2 }; });
-  const periodRows = assignRows(allPeriodSegs).rowCount;
-  const allEventSegs = State.data.events.map(e => ({ id: e.id, x1: xFromDate(e.date, pxm), x2: xFromDate(e.date, pxm) + estimateEventWidth(e) }));
-  const eventRows = assignRows(allEventSegs).rowCount;
-  const height = RULER_H + TOP_PAD + periodRows * (PERIOD_H + PERIOD_PAD) + LANE_GAP + eventRows * EVENT_ROW_H + 40;
+  const layout = getTimelineLayout(pxm);
+  const height = RULER_H + TOP_PAD + layout.rowCount * EVENT_ROW_H + 60;
 
   renderRuler(svg, pxm, height, { unit });
   const pY = RULER_H + TOP_PAD;
-  const { yEnd: pBottom, positions: periodPos } = renderPeriods(svg, pxm, pY);
-  const eY = pBottom + LANE_GAP;
-  const { positions: eventPos } = renderEvents(svg, pxm, eY);
+  const { positions: periodPos } = renderPeriods(svg, pxm, pY, layout.periodLayout);
+  const { positions: eventPos } = renderEvents(svg, pxm, pY, layout.eventLayout);
   renderFlows(svg, combinePositions(periodPos, eventPos));
 
   svg.setAttribute("viewBox", `${x0 - LEFT_PAD} 0 ${regionW} ${height}`);
@@ -1006,7 +1073,7 @@ function buildExportSVG({ startYear, endYear, unit }) {
     .grid-line{stroke:#eef1f5}.grid-line.major{stroke:#cbd5e1}.grid-line.year{stroke:#94a3b8}
     .tick-label{font:10px sans-serif;fill:#64748b}.tick-label.year{font:700 12px sans-serif;fill:#334155}
     .period-label{font:600 11px sans-serif;fill:#111}.event-label{font:11px sans-serif;fill:#1f2430}
-    .flow-path{fill:none;stroke-linecap:round}
+    .flow-path{fill:none;stroke-linecap:round}.flow-label{font:600 11px sans-serif;fill:#334155}
   `;
   svg.insertBefore(style, svg.firstChild);
   State.zoom = bakZoom;
@@ -1031,7 +1098,8 @@ async function exportPng({ startYear, endYear, unit }) {
   canvas.toBlob(blob => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `timeline_${startYear}-${endYear}_${unit === 12 ? "1y" : unit + "m"}.png`;
+    const unitName = ({ 12: "1y", 6: "6m", 3: "3m", 1: "1m", 0.5: "15d", 0.333: "10d", 0.1: "3d", 0.033: "1d" })[unit] || String(unit);
+    a.download = `timeline_${startYear}-${endYear}_${unitName}.png`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }, "image/png");
@@ -1041,7 +1109,7 @@ function openExportDialog() {
   const f_start = input("number", 1850, { min: YEAR_MIN, max: YEAR_MAX });
   const f_end   = input("number", 2000, { min: YEAR_MIN, max: YEAR_MAX });
   const f_unit  = document.createElement("select");
-  [["12","1년"],["6","6개월"],["3","3개월"],["1","1개월"]].forEach(([v, l]) => {
+  [["12","1년"],["6","6개월"],["3","3개월"],["1","1개월"],["0.5","15일"],["0.333","10일"],["0.1","3일"],["0.033","1일"]].forEach(([v, l]) => {
     const o = document.createElement("option"); o.value = v; o.textContent = l;
     f_unit.appendChild(o);
   });
@@ -1057,6 +1125,36 @@ function openExportDialog() {
       if (e < s) return alert("끝 연도가 시작보다 작습니다");
       closeModal();
       await exportPng({ startYear: s, endYear: e, unit: +f_unit.value });
+    })
+  ]});
+}
+
+function openTagManager() {
+  const body = document.createElement("div");
+  const rows = State.data.colorTags.map(tag => {
+    const line = document.createElement("div");
+    line.className = "tag-manager-row";
+    const colorInput = input("color", tag.color || "#94a3b8");
+    const nameInput = input("text", tag.name || "", { "aria-label": "태그 이름" });
+    line.appendChild(colorInput);
+    line.appendChild(nameInput);
+    body.appendChild(line);
+    return { tag, colorInput, nameInput };
+  });
+  if (!rows.length) body.textContent = "편집할 태그가 없습니다. 기간, 포인트 또는 흐름 편집 창에서 태그를 먼저 추가하세요.";
+  openModal({ title: "태그 색상 편집", body, footer: [
+    mkBtn("취소", "cancel", closeModal),
+    mkBtn("저장", "primary", () => {
+      const names = rows.map(row => row.nameInput.value.trim());
+      if (names.some(name => !name)) return alert("태그 이름을 입력하세요.");
+      if (new Set(names).size !== names.length) return alert("태그 이름은 중복될 수 없습니다.");
+      rows.forEach(row => {
+        row.tag.name = row.nameInput.value.trim();
+        row.tag.color = row.colorInput.value;
+      });
+      persistUserData(colorTagOperations());
+      render();
+      closeModal();
     })
   ]});
 }
@@ -1077,9 +1175,19 @@ function wireApp() {
   $("#btn-add-period").addEventListener("click", () => openPeriodEdit());
   $("#btn-add-event").addEventListener("click",  () => openEventEdit());
   $("#btn-add-flow").addEventListener("click",   () => openFlowEdit());
+  $("#btn-manage-tags").addEventListener("click", openTagManager);
   $("#btn-export").addEventListener("click", openExportDialog);
   $$(".seg-btn").forEach(b => b.addEventListener("click", () => setZoom(+b.dataset.zoom)));
   $("#modal-root").addEventListener("click", e => { if (e.target.dataset.close === "1") closeModal(); });
+  document.addEventListener("keydown", e => {
+    if (!e.altKey || e.ctrlKey || e.metaKey || !$("#modal-root").classList.contains("hidden") || $("#app-view").classList.contains("hidden")) return;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+    const actions = { "1": openPeriodEdit, "2": openEventEdit, "3": openFlowEdit };
+    if (actions[e.key]) {
+      e.preventDefault();
+      actions[e.key]();
+    }
+  });
 }
 
 async function boot() {
@@ -1113,5 +1221,4 @@ async function boot() {
   });
   setInterval(pollDatabase, 3000);
 }
-
 document.addEventListener("DOMContentLoaded", boot);

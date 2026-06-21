@@ -17,6 +17,7 @@ app.use(express.json({ limit: "20mb" }));
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 const hashToken = token => crypto.createHash("sha256").update(token).digest("hex");
+const dateOnly = value => value ? (value instanceof Date ? value.toISOString() : String(value)).slice(0, 10) : null;
 const text = value => (value == null ? "" : String(value));
 const nullable = value => (value ? String(value) : null);
 const ids = value => (Array.isArray(value) ? value.map(String) : []);
@@ -90,8 +91,8 @@ async function getSharedData() {
   ]);
   return {
     colorTags: colorTags.map(r => ({ id: r.id, name: r.name, color: r.color })),
-    periods: periods.map(r => ({ id: r.id, title: r.title, startDate: r.start_date, endDate: r.end_date, figures: r.figures, source: r.source, photo: r.photo, colorTagIds: r.color_tag_ids })),
-    events: events.map(r => ({ id: r.id, title: r.title, date: r.event_date, description: r.description, figures: r.figures, source: r.source, photo: r.photo, colorTagIds: r.color_tag_ids })),
+    periods: periods.map(r => ({ id: r.id, title: r.title, startDate: dateOnly(r.start_date), endDate: dateOnly(r.end_date), figures: r.figures, source: r.source, photo: r.photo, colorTagIds: r.color_tag_ids })),
+    events: events.map(r => ({ id: r.id, title: r.title, date: dateOnly(r.event_date), description: r.description, figures: r.figures, source: r.source, photo: r.photo, colorTagIds: r.color_tag_ids })),
     flows: flows.map(r => ({ id: r.id, title: r.title, description: r.description, colorTagIds: r.color_tag_ids,
       items: flowItems.filter(i => i.flow_id === r.id).map(i => ({ type: i.item_type, id: i.item_id })) }))
   };
