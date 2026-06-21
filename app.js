@@ -36,7 +36,7 @@ const $$  = (sel, root = document) => [...root.querySelectorAll(sel)];
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const el = (tag, attrs = {}, children = []) => {
-  const isSvg = ["svg","g","rect","line","text","path","circle","defs","marker","pattern"].includes(tag);
+  const isSvg = ["svg","g","rect","line","text","path","circle","defs","marker","pattern","clipPath"].includes(tag);
   const node = isSvg
     ? document.createElementNS(SVG_NS, tag)
     : document.createElement(tag);
@@ -510,6 +510,16 @@ function getItemColorBackground(item, type) {
   });
   return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
+function contrastingTextColor(color) {
+  const hex = String(color || "").replace("#", "");
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return "#111111";
+  const channels = [0, 2, 4].map(offset => parseInt(hex.slice(offset, offset + 2), 16) / 255);
+  const luminance = channels.reduce((sum, channel, index) => {
+    const linear = channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    return sum + linear * [0.2126, 0.7152, 0.0722][index];
+  }, 0);
+  return luminance > 0.42 ? "#111111" : "#ffffff";
+}
 
 /* ---------- 좌표 & 레이아웃 ---------- */
 function getPxPerMonth(zoom = State.zoom) { return PX_PER_MONTH[zoom] || 6; }
@@ -607,6 +617,8 @@ function renderPeriods(svg, pxm, yStart, layout = null) {
   const segs = periods.map(p => { const b = periodBounds(p, pxm); return { id: p.id, x1: b.x1, x2: b.x2 }; });
   const { rowMap, rowCount } = layout || assignRows(segs);
   const g = el("g", { class: "periods" });
+  let defs = svg.querySelector("defs");
+  if (!defs) { defs = el("defs"); svg.appendChild(defs); }
   const positions = {};
   periods.forEach(p => {
     const r = rowMap[p.id] || 0;
@@ -615,6 +627,8 @@ function renderPeriods(svg, pxm, yStart, layout = null) {
     const w = Math.max(8, x2 - x1);
     positions[p.id] = { x: x1 + w / 2, y };
     const colors = getItemColors(p, "period");
+    const label = periodLabelText(p);
+    g.appendChild(el("text", { x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: label, style: "fill:#111111" }));
     colors.forEach((color, index) => {
       const stripeH = PERIOD_H / colors.length;
       const rect = el("rect", {
@@ -626,8 +640,15 @@ function renderPeriods(svg, pxm, yStart, layout = null) {
       rect.addEventListener("click", () => openPeriodDetail(p));
       rect.addEventListener("contextmenu", e => { e.preventDefault(); openPeriodEdit(p); });
       g.appendChild(rect);
+      const clipId = `period-label-${String(p.id).replace(/[^a-zA-Z0-9_-]/g, "-")}-${index}`;
+      const clip = el("clipPath", { id: clipId });
+      clip.appendChild(el("rect", { x: x1, y: y + index * stripeH, width: w, height: stripeH + 0.5 }));
+      defs.appendChild(clip);
+      g.appendChild(el("text", {
+        x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: label,
+        "clip-path": `url(#${clipId})`, style: `fill:${contrastingTextColor(color)}`
+      }));
     });
-    g.appendChild(el("text", { x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: periodLabelText(p) }));
   });
   svg.appendChild(g);
   return { yEnd: yStart + rowCount * EVENT_ROW_H, positions };
