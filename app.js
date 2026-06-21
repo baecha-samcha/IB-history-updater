@@ -82,7 +82,6 @@ function getDataTimelineRange() {
   if (!dates.length) return { start: "1900-01-01", end: "2000-12-31" };
   return { start: shiftDate(dates[0], -7), end: shiftDate(dates[dates.length - 1], 7) };
 }
-function clampYear(y) { return Math.max(YEAR_MIN, Math.min(YEAR_MAX, y | 0)); }
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, c =>
@@ -735,8 +734,8 @@ function ensureArrowDefs(svg, color, id) {
   let defs = svg.querySelector("defs");
   if (!defs) { defs = el("defs"); svg.appendChild(defs); }
   if (svg.querySelector(`#${id}`)) return;
-  const marker = el("marker", { id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
-  marker.appendChild(el("path", { d: "M0,0 L10,5 L0,10 Z", fill: color }));
+  const marker = el("marker", { id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse", overflow: "visible" });
+  marker.appendChild(el("path", { d: "M0,0 L10,5 L0,10 Z", fill: color, stroke: "#fff", "stroke-width": 1.5, "stroke-linejoin": "round", "paint-order": "stroke" }));
   defs.appendChild(marker);
 }
 function flowItems(f) {
@@ -745,6 +744,10 @@ function flowItems(f) {
 }
 function renderFlows(svg, positions) {
   const g = el("g", { class: "flows" });
+  const pathsGroup = el("g", { class: "flow-lines" });
+  const labelsGroup = el("g", { class: "flow-labels" });
+  g.appendChild(pathsGroup);
+  g.appendChild(labelsGroup);
   State.data.flows.forEach(f => {
     const pts = flowItems(f).map(it => positions[`${it.type}:${it.id}`]).filter(Boolean);
     if (pts.length < 2) return;
@@ -758,17 +761,21 @@ function renderFlows(svg, positions) {
         const markerId = `arr_${f.id}_${colorIndex}`;
         ensureArrowDefs(svg, color, markerId);
         const d = `M ${a.x} ${a.y - 6 + offset} Q ${(a.x + b.x) / 2} ${midY + offset} ${b.x} ${b.y - 6 + offset}`;
+        pathsGroup.appendChild(el("path", { d, class: "flow-path-outline", fill: "none", stroke: "#fff", "stroke-width": 5, "stroke-linecap": "round", "pointer-events": "none" }));
         const path = el("path", { d, class: "flow-path", fill: "none", stroke: color, "stroke-width": 2, "stroke-linecap": "round", "marker-end": `url(#${markerId})`, "data-flow": f.id });
         path.addEventListener("mouseenter", e => showTooltip(e, f));
         path.addEventListener("mousemove", moveTooltip);
         path.addEventListener("mouseleave", hideTooltip);
         path.addEventListener("click", () => openFlowEdit(f));
-        g.appendChild(path);
+        pathsGroup.appendChild(path);
       });
       if (i === 0) {
         const title = el("text", { x: (a.x + b.x) / 2, y: midY - 7, class: "flow-label", "text-anchor": "middle", text: f.title || "(무제 흐름)" });
+        title.addEventListener("mouseenter", e => { labelsGroup.appendChild(title); showTooltip(e, f); });
+        title.addEventListener("mousemove", moveTooltip);
+        title.addEventListener("mouseleave", hideTooltip);
         title.addEventListener("click", () => openFlowEdit(f));
-        g.appendChild(title);
+        labelsGroup.appendChild(title);
       }
     }
   });
@@ -1130,15 +1137,10 @@ function renderLegend() {
    Part 5/5: PNG 내보내기 + 줌 + 부트
    =========================================================== */
 
-function buildExportSVG({ startYear, endYear, unit }) {
-  const bakZoom = State.zoom;
-  const bakRange = State.timelineRange;
-  State.zoom = unit;
-  State.timelineRange = { start: `${startYear}-01-01`, end: `${endYear}-12-31` };
+function buildExportSVG() {
+  const unit = State.zoom;
   const pxm = getPxPerMonth(unit);
-  const x0 = LEFT_PAD;
-  const x1 = xFromDate(`${endYear + 1}-01-01`, pxm);
-  const regionW = (x1 - x0) + LEFT_PAD + RIGHT_PAD;
+  const regionW = totalWidth(pxm);
 
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("xmlns", SVG_NS);
@@ -1152,10 +1154,10 @@ function buildExportSVG({ startYear, endYear, unit }) {
   const { positions: eventPos } = renderEvents(svg, pxm, pY, layout.eventLayout);
   renderFlows(svg, combinePositions(periodPos, eventPos));
 
-  svg.setAttribute("viewBox", `${x0 - LEFT_PAD} 0 ${regionW} ${height}`);
+  svg.setAttribute("viewBox", `0 0 ${regionW} ${height}`);
   svg.setAttribute("width", regionW);
   svg.setAttribute("height", height);
-  svg.insertBefore(el("rect", { x: x0 - LEFT_PAD, y: 0, width: regionW, height, fill: "#ffffff" }), svg.firstChild);
+  svg.insertBefore(el("rect", { x: 0, y: 0, width: regionW, height, fill: "#ffffff" }), svg.firstChild);
 
   const style = document.createElementNS(SVG_NS, "style");
   style.textContent = `
@@ -1166,19 +1168,20 @@ function buildExportSVG({ startYear, endYear, unit }) {
     .flow-path{fill:none;stroke-linecap:round}.flow-label{font:600 11px sans-serif;fill:#334155}
   `;
   svg.insertBefore(style, svg.firstChild);
-  State.zoom = bakZoom;
-  State.timelineRange = bakRange;
   return { svg, width: regionW, height };
 }
 
-async function exportPng({ startYear, endYear, unit }) {
-  const { svg, width, height } = buildExportSVG({ startYear, endYear, unit });
+async function exportPng() {
+  const exportRange = { ...State.timelineRange };
+  const exportUnit = State.zoom;
+  const { svg, width, height } = buildExportSVG();
   const xml = new XMLSerializer().serializeToString(svg);
   const svgBlob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(svgBlob);
   const img = new Image();
   await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
-  const scale = Math.min(2, Math.max(1, 1600 / width));
+  const desiredScale = Math.min(2, Math.max(1, 1600 / width));
+  const scale = Math.min(desiredScale, 16000 / width, 16000 / height);
   const canvas = document.createElement("canvas");
   canvas.width  = Math.round(width * scale);
   canvas.height = Math.round(height * scale);
@@ -1189,35 +1192,18 @@ async function exportPng({ startYear, endYear, unit }) {
   canvas.toBlob(blob => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    const unitName = ({ 12: "1y", 6: "6m", 3: "3m", 1: "1m", 0.5: "15d", 0.333: "10d", 0.1: "3d", 0.033: "1d" })[unit] || String(unit);
-    a.download = `timeline_${startYear}-${endYear}_${unitName}.png`;
+    const unitName = ({ 12: "1y", 6: "6m", 3: "3m", 1: "1m", 0.5: "15d", 0.333: "10d", 0.1: "3d", 0.033: "1d" })[exportUnit] || String(exportUnit);
+    a.download = `timeline_${exportRange.start}_${exportRange.end}_${unitName}.png`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }, "image/png");
 }
 
-function openExportDialog() {
-  const f_start = input("number", 1850, { min: YEAR_MIN, max: YEAR_MAX });
-  const f_end   = input("number", 2000, { min: YEAR_MIN, max: YEAR_MAX });
-  const f_unit  = document.createElement("select");
-  [["12","1년"],["6","6개월"],["3","3개월"],["1","1개월"],["0.5","15일"],["0.333","10일"],["0.1","3일"],["0.033","1일"]].forEach(([v, l]) => {
-    const o = document.createElement("option"); o.value = v; o.textContent = l;
-    f_unit.appendChild(o);
+function exportVisibleTimeline() {
+  exportPng().catch(error => {
+    console.error("PNG export failed:", error);
+    alert("PNG 내보내기에 실패했습니다.");
   });
-  f_unit.value = String(State.zoom);
-  const body = document.createElement("div");
-  body.appendChild(row(field("시작 연도", f_start), field("끝 연도", f_end)));
-  body.appendChild(field("단위", f_unit));
-  openModal({ title: "PNG 내보내기", body, footer: [
-    mkBtn("취소", "cancel", closeModal),
-    mkBtn("내보내기", "primary", async () => {
-      const s = clampYear(+f_start.value);
-      const e = clampYear(+f_end.value);
-      if (e < s) return alert("끝 연도가 시작보다 작습니다");
-      closeModal();
-      await exportPng({ startYear: s, endYear: e, unit: +f_unit.value });
-    })
-  ]});
 }
 
 function openTagManager() {
@@ -1268,7 +1254,7 @@ function wireApp() {
   $("#btn-add-flow").addEventListener("click",   () => openFlowEdit());
   $("#btn-manage-tags").addEventListener("click", openTagManager);
   $("#btn-theme").addEventListener("click", toggleTheme);
-  $("#btn-export").addEventListener("click", openExportDialog);
+  $("#btn-export").addEventListener("click", exportVisibleTimeline);
   $$(".seg-btn").forEach(b => b.addEventListener("click", () => setZoom(+b.dataset.zoom)));
   $("#modal-root").addEventListener("click", e => { if (e.target.dataset.close === "1") closeModal(); });
   document.addEventListener("keydown", e => {
@@ -1311,6 +1297,9 @@ async function boot() {
       if (_pendingOperations.length) schedulePushSync();
       else pollDatabase();
     }
+  });
+  window.addEventListener("offline", () => {
+    if (State.session) updateSyncStatus("offline");
   });
   setInterval(pollDatabase, 3000);
 }
