@@ -5,6 +5,7 @@
 
 /* ---------- Server API ---------- */
 const SESSION_KEY = "ibhistory.session.v1";
+const THEME_KEY = "ibhistory.theme.v1";
 const SHARED_CACHE_USER = "__shared__";
 const PENDING_OPERATIONS_KEY = "ibhistory.pending-operations.v1";
 
@@ -262,6 +263,24 @@ async function loadFromDatabase() {
   State.data = response.data;
   State.version = response.version;
   migrateData(State.data);
+}
+
+function applyTheme(theme, persist = false) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  if (persist) localStorage.setItem(THEME_KEY, next);
+  const button = $("#btn-theme");
+  if (button) {
+    const dark = next === "dark";
+    button.textContent = dark ? "라이트 모드" : "다크 모드";
+    button.setAttribute("aria-pressed", String(dark));
+    button.title = dark ? "밝은 화면으로 전환" : "어두운 화면으로 전환";
+  }
+}
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  applyTheme(next, true);
 }
 /* ---------- PostgreSQL 동기화 ---------- */
 let _pendingOperations = (() => {
@@ -563,7 +582,7 @@ function estimatePeriodLabelWidth(p) {
 function renderRuler(svg, pxm, height, opts = {}) {
   const unit = opts.unit || State.zoom;
   const g = el("g", { class: "ruler" });
-  g.appendChild(el("rect", { x: 0, y: 0, width: totalWidth(pxm), height: RULER_H, fill: "#f8fafc" }));
+  g.appendChild(el("rect", { x: 0, y: 0, width: totalWidth(pxm), height: RULER_H, fill: "var(--timeline-ruler)" }));
   const startYear = parseYMD(State.timelineRange.start).y;
   const endYear = parseYMD(State.timelineRange.end).y;
 
@@ -628,7 +647,7 @@ function renderPeriods(svg, pxm, yStart, layout = null) {
     positions[p.id] = { x: x1 + w / 2, y };
     const colors = getItemColors(p, "period");
     const label = periodLabelText(p);
-    g.appendChild(el("text", { x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: label, style: "fill:#111111" }));
+    g.appendChild(el("text", { x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: label, style: "fill:var(--clay-black)" }));
     colors.forEach((color, index) => {
       const stripeH = PERIOD_H / colors.length;
       const rect = el("rect", {
@@ -1127,6 +1146,7 @@ function buildExportSVG({ startYear, endYear, unit }) {
 
   const style = document.createElementNS(SVG_NS, "style");
   style.textContent = `
+    :root{--timeline-ruler:#f8fafc;--clay-black:#111}
     .grid-line{stroke:#eef1f5}.grid-line.major{stroke:#cbd5e1}.grid-line.year{stroke:#94a3b8}
     .tick-label{font:10px sans-serif;fill:#64748b}.tick-label.year{font:700 12px sans-serif;fill:#334155}
     .period-label{font:600 11px sans-serif;fill:#111}.event-label{font:11px sans-serif;fill:#1f2430}
@@ -1234,6 +1254,7 @@ function wireApp() {
   $("#btn-add-event").addEventListener("click",  () => openEventEdit());
   $("#btn-add-flow").addEventListener("click",   () => openFlowEdit());
   $("#btn-manage-tags").addEventListener("click", openTagManager);
+  $("#btn-theme").addEventListener("click", toggleTheme);
   $("#btn-export").addEventListener("click", openExportDialog);
   $$(".seg-btn").forEach(b => b.addEventListener("click", () => setZoom(+b.dataset.zoom)));
   $("#modal-root").addEventListener("click", e => { if (e.target.dataset.close === "1") closeModal(); });
@@ -1249,6 +1270,7 @@ function wireApp() {
 }
 
 async function boot() {
+  applyTheme(localStorage.getItem(THEME_KEY) || "light");
   wireAuth();
   wireApp();
   try {
