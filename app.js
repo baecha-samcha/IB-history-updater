@@ -37,7 +37,7 @@ const $$  = (sel, root = document) => [...root.querySelectorAll(sel)];
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const el = (tag, attrs = {}, children = []) => {
-  const isSvg = ["svg","g","rect","line","text","path","circle","defs","marker","pattern","clipPath"].includes(tag);
+  const isSvg = ["svg","g","rect","line","text","path","circle","defs","marker","pattern"].includes(tag);
   const node = isSvg
     ? document.createElementNS(SVG_NS, tag)
     : document.createElement(tag);
@@ -281,6 +281,7 @@ function applyTheme(theme, persist = false) {
 function toggleTheme() {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   applyTheme(next, true);
+  if (!$("#app-view")?.classList.contains("hidden")) renderLegend();
 }
 /* ---------- PostgreSQL 동기화 ---------- */
 let _pendingOperations = (() => {
@@ -529,15 +530,32 @@ function getItemColorBackground(item, type) {
   });
   return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
-function contrastingTextColor(color) {
+function colorMetrics(color) {
   const hex = String(color || "").replace("#", "");
-  if (!/^[0-9a-f]{6}$/i.test(hex)) return "#111111";
-  const channels = [0, 2, 4].map(offset => parseInt(hex.slice(offset, offset + 2), 16) / 255);
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return { luminance: 1, saturation: 0, hue: 0 };
+  const raw = [0, 2, 4].map(offset => parseInt(hex.slice(offset, offset + 2), 16) / 255);
+  const max = Math.max(...raw), min = Math.min(...raw), delta = max - min;
+  let hue = 0;
+  if (delta && max === raw[0]) hue = 60 * (((raw[1] - raw[2]) / delta) % 6);
+  else if (delta && max === raw[1]) hue = 60 * ((raw[2] - raw[0]) / delta + 2);
+  else if (delta) hue = 60 * ((raw[0] - raw[1]) / delta + 4);
+  const saturation = max === 0 ? 0 : delta / max;
+  const channels = raw;
   const luminance = channels.reduce((sum, channel, index) => {
     const linear = channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
     return sum + linear * [0.2126, 0.7152, 0.0722][index];
   }, 0);
-  return luminance > 0.42 ? "#111111" : "#ffffff";
+  return { luminance, saturation, hue: (hue + 360) % 360 };
+}
+function needsLightOutline(color) {
+  return colorMetrics(color).luminance < 0.2;
+}
+function readableTagTextColor(color) {
+  if (document.documentElement.dataset.theme !== "dark") return color;
+  const metrics = colorMetrics(color);
+  if (metrics.luminance >= 0.32) return color;
+  if (metrics.saturation < 0.12) return "#f3f4f6";
+  return `hsl(${Math.round(metrics.hue)} 85% 72%)`;
 }
 
 /* ---------- 좌표 & 레이아웃 ---------- */
@@ -636,8 +654,6 @@ function renderPeriods(svg, pxm, yStart, layout = null) {
   const segs = periods.map(p => { const b = periodBounds(p, pxm); return { id: p.id, x1: b.x1, x2: b.x2 }; });
   const { rowMap, rowCount } = layout || assignRows(segs);
   const g = el("g", { class: "periods" });
-  let defs = svg.querySelector("defs");
-  if (!defs) { defs = el("defs"); svg.appendChild(defs); }
   const positions = {};
   periods.forEach(p => {
     const r = rowMap[p.id] || 0;
@@ -647,7 +663,6 @@ function renderPeriods(svg, pxm, yStart, layout = null) {
     positions[p.id] = { x: x1 + w / 2, y };
     const colors = getItemColors(p, "period");
     const label = periodLabelText(p);
-    g.appendChild(el("text", { x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: label, style: "fill:var(--clay-black)" }));
     colors.forEach((color, index) => {
       const stripeH = PERIOD_H / colors.length;
       const rect = el("rect", {
@@ -659,15 +674,14 @@ function renderPeriods(svg, pxm, yStart, layout = null) {
       rect.addEventListener("click", () => openPeriodDetail(p));
       rect.addEventListener("contextmenu", e => { e.preventDefault(); openPeriodEdit(p); });
       g.appendChild(rect);
-      const clipId = `period-label-${String(p.id).replace(/[^a-zA-Z0-9_-]/g, "-")}-${index}`;
-      const clip = el("clipPath", { id: clipId });
-      clip.appendChild(el("rect", { x: x1, y: y + index * stripeH, width: w, height: stripeH + 0.5 }));
-      defs.appendChild(clip);
-      g.appendChild(el("text", {
-        x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: label,
-        "clip-path": `url(#${clipId})`, style: `fill:${contrastingTextColor(color)}`
-      }));
     });
+    if (colors.some(needsLightOutline)) {
+      g.appendChild(el("rect", { x: x1, y, width: w, height: PERIOD_H, rx: 4, fill: "none", stroke: "#fff", "stroke-width": 1.5, "pointer-events": "none" }));
+    }
+    g.appendChild(el("text", {
+      x: x1 + 6, y: y + PERIOD_H - 7, class: "period-label", text: label,
+      style: "fill:#fff;stroke:#111;stroke-width:3px;paint-order:stroke;stroke-linejoin:round"
+    }));
   });
   svg.appendChild(g);
   return { yEnd: yStart + rowCount * EVENT_ROW_H, positions };
@@ -694,7 +708,6 @@ function renderEvents(svg, pxm, yStart, layout = null) {
     const x = xFromDate(e.date, pxm);
     const y = yStart + r * EVENT_ROW_H + 14;
     positions[e.id] = { x, y };
-    g.appendChild(el("line", { x1: x, y1: yStart - 4, x2: x, y2: y, stroke: "#94a3b8", "stroke-width": 1, "stroke-dasharray": "2 3" }));
     const colors = getItemColors(e, "event");
     const markerParts = colors.length === 1
       ? [el("circle", { cx: x, cy: y, r: 5, fill: colors[0], class: "event-marker" })]
@@ -1078,7 +1091,7 @@ function renderLegend() {
     const color = getItemColorBackground(p, "period");
     const tags = (p.colorTagIds || []).map(id => {
       const ct = State.data.colorTags.find(t => t.id === id);
-      return ct ? `<small style="color:${ct.color}">#${escapeHtml(ct.name)}</small>` : "";
+      return ct ? `<small style="color:${readableTagTextColor(ct.color)}">#${escapeHtml(ct.name)}</small>` : "";
     }).join(" ");
     li.innerHTML = `<span class="swatch" style="background:${color}"></span><span>${escapeHtml(p.title || "기간")} ${tags} <small>(${p.startDate || ""} ~ ${p.endDate || ""})</small></span>`;
     li.title = "좌클릭: 상세 / 우클릭: 편집";
@@ -1093,7 +1106,7 @@ function renderLegend() {
     const color = getItemColorBackground(e, "event");
     const tags = (e.colorTagIds || []).map(id => {
       const ct = State.data.colorTags.find(t => t.id === id);
-      return ct ? `<small style="color:${ct.color}">#${escapeHtml(ct.name)}</small>` : "";
+      return ct ? `<small style="color:${readableTagTextColor(ct.color)}">#${escapeHtml(ct.name)}</small>` : "";
     }).join(" ");
     li.innerHTML = `<span class="swatch" style="background:${color}"></span><span>${escapeHtml(e.title || "(무제)")} ${tags} <small>${e.date || ""}</small></span>`;
     li.title = "좌클릭: 상세 / 우클릭: 편집";
