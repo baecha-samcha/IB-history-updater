@@ -300,7 +300,8 @@ small  { font-size: 12px; color: var(--warm-silver); }
 .tick-label         { font: 10px var(--font); fill: var(--warm-silver); }
 .tick-label.year    { font: 600 12px var(--font); fill: var(--charcoal); }
 .period-label       { font: 600 11px var(--font); fill: var(--clay-black); pointer-events: none; }
-.event-label        { font: 13px var(--font); fill: var(--clay-black); pointer-events: none; }
+.event-label        { font: 13px var(--font); fill: var(--clay-black); pointer-events: auto; }
+.event-label:hover  { paint-order: stroke; stroke: var(--white); stroke-width: 4px; stroke-linejoin: round; }
 .flow-path          { fill: none; stroke-linecap: round; cursor: pointer; }
 .flow-label         { font: 600 11px var(--font); fill: var(--charcoal); cursor: pointer; paint-order: stroke; stroke: white; stroke-width: 3px; }
 .flow-path:hover    { filter: drop-shadow(0 0 3px currentColor); }

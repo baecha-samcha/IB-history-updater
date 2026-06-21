@@ -721,6 +721,7 @@ function renderEvents(svg, pxm, yStart, layout = null) {
     });
     g.appendChild(el("circle", { cx: x, cy: y, r: 5, fill: "none", stroke: "#fff", "stroke-width": 1.5, "pointer-events": "none" }));
     const t = el("text", { x: x + 8, y: y + 4, class: "event-label", text: e.title || "(제목 없음)", style: "cursor:pointer" });
+    t.addEventListener("mouseenter", () => { if (svg.lastChild !== t) svg.appendChild(t); });
     t.addEventListener("click", () => openEventDetail(e));
     t.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
     g.appendChild(t);
