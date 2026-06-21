@@ -20,16 +20,13 @@ async function api(path, options = {}) {
 /* ---------- 1. 상수 & 유틸 ---------- */
 const YEAR_MIN = 1850;
 const YEAR_MAX = 2000;
-const TOTAL_MONTHS = (YEAR_MAX - YEAR_MIN + 1) * 12;
 const CACHE_KEY = "ibhistory.cache.v2";
 
 const PX_PER_MONTH = { 12: 3, 6: 6, 3: 12, 1: 36, 0.5: 72, 0.333: 108, 0.1: 360, 0.033: 1080 };
 
 const RULER_H    = 46;
-const LANE_GAP   = 18;
 const PERIOD_H   = 24;
-const PERIOD_PAD = 4;
-const EVENT_ROW_H = 52;
+const EVENT_ROW_H = 34;
 const LEFT_PAD   = 40;
 const RIGHT_PAD  = 40;
 const TOP_PAD    = 10;
@@ -39,7 +36,7 @@ const $$  = (sel, root = document) => [...root.querySelectorAll(sel)];
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const el = (tag, attrs = {}, children = []) => {
-  const isSvg = ["svg","g","rect","line","text","path","circle","defs","marker"].includes(tag);
+  const isSvg = ["svg","g","rect","line","text","path","circle","defs","marker","pattern"].includes(tag);
   const node = isSvg
     ? document.createElementNS(SVG_NS, tag)
     : document.createElement(tag);
@@ -69,10 +66,21 @@ function normalizeDate(value, fallback = "") {
   const match = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
   return match ? match[1] : fallback;
 }
-function ymdToMonthIndex(ymd) {
-  return (ymd.y - YEAR_MIN) * 12 + (ymd.m - 1) + (ymd.d - 1) / 31;
+function dateToUtc(value) {
+  const p = parseYMD(normalizeDate(value));
+  return p ? Date.UTC(p.y, p.m - 1, p.d) : NaN;
 }
-function yearToMonthIndex(y) { return (y - YEAR_MIN) * 12; }
+function shiftDate(value, days) {
+  return new Date(dateToUtc(value) + days * 86400000).toISOString().slice(0, 10);
+}
+function getDataTimelineRange() {
+  const dates = [
+    ...State.data.events.map(event => event.date),
+    ...State.data.periods.flatMap(period => [period.startDate, period.endDate])
+  ].map(date => normalizeDate(date)).filter(Boolean).sort();
+  if (!dates.length) return { start: "1900-01-01", end: "2000-12-31" };
+  return { start: shiftDate(dates[0], -7), end: shiftDate(dates[dates.length - 1], 7) };
+}
 function clampYear(y) { return Math.max(YEAR_MIN, Math.min(YEAR_MAX, y | 0)); }
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function escapeHtml(s) {
@@ -164,6 +172,7 @@ const State = {
   data: emptyData(),
   version: -1,
   zoom: 6,
+  timelineRange: { start: "1900-01-01", end: "2000-12-31" },
 };
 
 /* ---------- 동기화 상태 UI ---------- */
@@ -504,13 +513,17 @@ function getItemColorBackground(item, type) {
 
 /* ---------- 좌표 & 레이아웃 ---------- */
 function getPxPerMonth(zoom = State.zoom) { return PX_PER_MONTH[zoom] || 6; }
-function xFromMonthIndex(mi, pxm = getPxPerMonth()) { return LEFT_PAD + mi * pxm; }
-function xFromYear(y, pxm) { return xFromMonthIndex(yearToMonthIndex(y), pxm); }
 function xFromDate(s, pxm) {
-  const p = parseYMD(s); if (!p) return LEFT_PAD;
-  return xFromMonthIndex(ymdToMonthIndex(p), pxm);
+  const value = dateToUtc(s);
+  const start = dateToUtc(State.timelineRange.start);
+  if (!Number.isFinite(value) || !Number.isFinite(start)) return LEFT_PAD;
+  return LEFT_PAD + ((value - start) / 86400000) * (pxm / 30.4375);
 }
-function totalWidth(pxm = getPxPerMonth()) { return LEFT_PAD + TOTAL_MONTHS * pxm + RIGHT_PAD; }
+function xFromYear(y, pxm) { return xFromDate(`${y}-01-01`, pxm); }
+function totalWidth(pxm = getPxPerMonth()) {
+  const days = Math.max(1, (dateToUtc(State.timelineRange.end) - dateToUtc(State.timelineRange.start)) / 86400000);
+  return LEFT_PAD + days * (pxm / 30.4375) + RIGHT_PAD;
+}
 
 function assignRows(segments) {
   const sorted = [...segments].sort((a, b) => a.x1 - b.x1);
@@ -541,13 +554,28 @@ function renderRuler(svg, pxm, height, opts = {}) {
   const unit = opts.unit || State.zoom;
   const g = el("g", { class: "ruler" });
   g.appendChild(el("rect", { x: 0, y: 0, width: totalWidth(pxm), height: RULER_H, fill: "#f8fafc" }));
-  for (let y = YEAR_MIN; y <= YEAR_MAX; y++) {
+  const startYear = parseYMD(State.timelineRange.start).y;
+  const endYear = parseYMD(State.timelineRange.end).y;
+
+  if (unit < 1) {
+    const dayStep = unit === 0.5 ? 15 : unit === 0.333 ? 10 : unit === 0.1 ? 3 : 1;
+    let defs = svg.querySelector("defs");
+    if (!defs) { defs = el("defs"); svg.appendChild(defs); }
+    const patternId = `day-grid-${String(unit).replace(".", "-")}`;
+    const spacing = dayStep * pxm / 30.4375;
+    const pattern = el("pattern", { id: patternId, width: spacing, height: 1, patternUnits: "userSpaceOnUse" });
+    pattern.appendChild(el("line", { x1: 0, y1: 0, x2: 0, y2: 1, class: "grid-line" }));
+    defs.appendChild(pattern);
+    g.appendChild(el("rect", { x: LEFT_PAD, y: RULER_H - 8, width: totalWidth(pxm) - LEFT_PAD - RIGHT_PAD, height: height - RULER_H + 8, fill: `url(#${patternId})` }));
+  }
+
+  for (let y = startYear; y <= endYear; y++) {
     const x = xFromYear(y, pxm);
     g.appendChild(el("line", { x1: x, y1: 0, x2: x, y2: height, class: "grid-line year" }));
     g.appendChild(el("text", { x: x + 2, y: 14, class: "tick-label year", text: String(y) }));
     if (unit >= 1 && unit < 12) {
       for (let m = unit; m < 12; m += unit) {
-        const xm = xFromMonthIndex((y - YEAR_MIN) * 12 + m, pxm);
+        const xm = xFromDate(`${y}-${String(m + 1).padStart(2, "0")}-01`, pxm);
         g.appendChild(el("line", {
           x1: xm, y1: RULER_H - 10, x2: xm, y2: height,
           class: m % 6 === 0 ? "grid-line major" : "grid-line"
@@ -556,21 +584,14 @@ function renderRuler(svg, pxm, height, opts = {}) {
           g.appendChild(el("text", { x: xm + 2, y: RULER_H - 2, class: "tick-label", text: (m + 1) + "월" }));
       }
     } else if (unit < 1) {
-      const dayStep = unit === 0.5 ? 15 : unit === 0.333 ? 10 : unit === 0.1 ? 3 : 1;
       for (let month = 1; month <= 12; month++) {
-        const days = new Date(Date.UTC(y, month, 0)).getUTCDate();
         const monthX = xFromDate(`${y}-${String(month).padStart(2, "0")}-01`, pxm);
         g.appendChild(el("line", { x1: monthX, y1: RULER_H - 14, x2: monthX, y2: height, class: "grid-line major" }));
         g.appendChild(el("text", { x: monthX + 2, y: RULER_H - 3, class: "tick-label", text: `${month}월` }));
-        for (let day = 1 + dayStep; day <= days; day += dayStep) {
-          const xDay = xFromDate(`${y}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`, pxm);
-          g.appendChild(el("line", { x1: xDay, y1: RULER_H - 8, x2: xDay, y2: height, class: "grid-line" }));
-          if (pxm * unit >= 28) g.appendChild(el("text", { x: xDay + 2, y: RULER_H - 3, class: "tick-label", text: String(day) }));
-        }
       }
     }
   }
-  const xEnd = xFromYear(YEAR_MAX, pxm) + 12 * pxm;
+  const xEnd = xFromDate(State.timelineRange.end, pxm);
   g.appendChild(el("line", { x1: xEnd, y1: 0, x2: xEnd, y2: height, class: "grid-line year" }));
   svg.appendChild(g);
 }
@@ -595,9 +616,9 @@ function renderPeriods(svg, pxm, yStart, layout = null) {
     positions[p.id] = { x: x1 + w / 2, y };
     const colors = getItemColors(p, "period");
     colors.forEach((color, index) => {
-      const stripeW = w / colors.length;
+      const stripeH = PERIOD_H / colors.length;
       const rect = el("rect", {
-        x: x1 + index * stripeW, y, width: stripeW + 0.5, height: PERIOD_H,
+        x: x1, y: y + index * stripeH, width: w, height: stripeH + 0.5,
         rx: colors.length === 1 ? 4 : 0, fill: color,
         "fill-opacity": "0.82", stroke: "#1f2937", "stroke-opacity": "0.18",
         class: "period-rect"
@@ -613,6 +634,12 @@ function renderPeriods(svg, pxm, yStart, layout = null) {
 }
 
 /* ---------- 렌더: 포인트 ---------- */
+function circleSlicePath(cx, cy, radius, startAngle, endAngle) {
+  const start = { x: cx + radius * Math.cos(startAngle), y: cy + radius * Math.sin(startAngle) };
+  const end = { x: cx + radius * Math.cos(endAngle), y: cy + radius * Math.sin(endAngle) };
+  const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
+  return `M ${cx} ${cy} L ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} 1 ${end.x} ${end.y} Z`;
+}
 function renderEvents(svg, pxm, yStart, layout = null) {
   const evs = State.data.events;
   const segs = evs.map(e => {
@@ -629,13 +656,19 @@ function renderEvents(svg, pxm, yStart, layout = null) {
     positions[e.id] = { x, y };
     g.appendChild(el("line", { x1: x, y1: yStart - 4, x2: x, y2: y, stroke: "#94a3b8", "stroke-width": 1, "stroke-dasharray": "2 3" }));
     const colors = getItemColors(e, "event");
-    colors.forEach((color, index) => {
-      const circle = el("circle", { cx: x + index * 7, cy: y, r: 5, fill: color, stroke: "#fff", "stroke-width": 1.5, class: "event-marker" });
-      circle.addEventListener("click", () => openEventDetail(e));
-      circle.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
-      g.appendChild(circle);
+    const markerParts = colors.length === 1
+      ? [el("circle", { cx: x, cy: y, r: 5, fill: colors[0], class: "event-marker" })]
+      : colors.map((color, index) => el("path", {
+          d: circleSlicePath(x, y, 5, -Math.PI / 2 + index * Math.PI * 2 / colors.length, -Math.PI / 2 + (index + 1) * Math.PI * 2 / colors.length),
+          fill: color, class: "event-marker"
+        }));
+    markerParts.forEach(marker => {
+      marker.addEventListener("click", () => openEventDetail(e));
+      marker.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
+      g.appendChild(marker);
     });
-    const t = el("text", { x: x + Math.max(8, colors.length * 7), y: y + 4, class: "event-label", text: e.title || "(제목 없음)", style: "cursor:pointer" });
+    g.appendChild(el("circle", { cx: x, cy: y, r: 5, fill: "none", stroke: "#fff", "stroke-width": 1.5, "pointer-events": "none" }));
+    const t = el("text", { x: x + 8, y: y + 4, class: "event-label", text: e.title || "(제목 없음)", style: "cursor:pointer" });
     t.addEventListener("click", () => openEventDetail(e));
     t.addEventListener("contextmenu", ev => { ev.preventDefault(); openEventEdit(e); });
     g.appendChild(t);
@@ -733,10 +766,11 @@ function getTimelineLayout(pxm) {
 function render() {
   const svg = $("#timeline-svg");
   svg.innerHTML = "";
+  State.timelineRange = getDataTimelineRange();
   const pxm = getPxPerMonth();
   const width = totalWidth(pxm);
   const layout = getTimelineLayout(pxm);
-  const height = RULER_H + TOP_PAD + layout.rowCount * EVENT_ROW_H + 60;
+  const height = RULER_H + TOP_PAD + layout.rowCount * EVENT_ROW_H + 36;
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -1045,17 +1079,19 @@ function renderLegend() {
 
 function buildExportSVG({ startYear, endYear, unit }) {
   const bakZoom = State.zoom;
+  const bakRange = State.timelineRange;
   State.zoom = unit;
+  State.timelineRange = { start: `${startYear}-01-01`, end: `${endYear}-12-31` };
   const pxm = getPxPerMonth(unit);
-  const x0 = xFromYear(startYear, pxm);
-  const x1 = xFromYear(endYear + 1, pxm);
+  const x0 = LEFT_PAD;
+  const x1 = xFromDate(`${endYear + 1}-01-01`, pxm);
   const regionW = (x1 - x0) + LEFT_PAD + RIGHT_PAD;
 
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("xmlns", SVG_NS);
 
   const layout = getTimelineLayout(pxm);
-  const height = RULER_H + TOP_PAD + layout.rowCount * EVENT_ROW_H + 60;
+  const height = RULER_H + TOP_PAD + layout.rowCount * EVENT_ROW_H + 36;
 
   renderRuler(svg, pxm, height, { unit });
   const pY = RULER_H + TOP_PAD;
@@ -1077,6 +1113,7 @@ function buildExportSVG({ startYear, endYear, unit }) {
   `;
   svg.insertBefore(style, svg.firstChild);
   State.zoom = bakZoom;
+  State.timelineRange = bakRange;
   return { svg, width: regionW, height };
 }
 
