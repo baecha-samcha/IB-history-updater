@@ -12,7 +12,7 @@ const PENDING_OPERATIONS_KEY = "ibhistory.pending-operations.v1";
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (State.session?.token) headers.Authorization = `Bearer ${State.session.token}`;
-  const response = await fetch(`/api${path}`, { ...options, headers });
+  const response = await fetch(`api${path}`, { ...options, headers });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
   return body;
