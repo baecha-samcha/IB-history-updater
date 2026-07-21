@@ -1,6 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { neon } from "@neondatabase/serverless";
+import { pool, query } from "../db/client.js";
 import { server } from "../server.js";
 
 const baseUrl = `http://localhost:${process.env.PORT || 3000}/api`;
@@ -9,7 +9,6 @@ const usernameB = `integration_b_${Date.now()}`;
 const password = "integration-test-password";
 const eventId = `event_${Date.now()}`;
 const secondEventId = `${eventId}_second`;
-const sql = neon(process.env.DATABASE_URL);
 let token;
 
 async function request(path, options = {}) {
@@ -50,12 +49,13 @@ try {
     { action: "delete", entity: "event", id: secondEventId }
   ] }) });
   assert.equal((await request("/data")).data.events.some(event => [eventId, secondEventId].includes(event.id)), false);
-  const rows = await sql`SELECT is_deleted FROM events WHERE user_id='00000000-0000-0000-0000-000000000001' AND id=${eventId}`;
-  assert.equal(rows[0]?.is_deleted, true);
+  const rows = await query("SELECT is_deleted FROM events WHERE user_id='00000000-0000-0000-0000-000000000001' AND id=?", [eventId]);
+  assert.equal(Boolean(rows[0]?.is_deleted), true);
   console.log("Multi-user collaboration and soft-delete validation completed.");
 } finally {
-  await sql`UPDATE events SET is_deleted=true WHERE user_id='00000000-0000-0000-0000-000000000001' AND id IN (${eventId},${secondEventId})`;
-  await sql`UPDATE user_sessions SET is_deleted=true WHERE user_id IN (SELECT id FROM app_users WHERE username IN (${usernameA},${usernameB}))`;
-  await sql`UPDATE app_users SET is_deleted=true WHERE username IN (${usernameA},${usernameB})`;
+  await query("UPDATE events SET is_deleted=true WHERE user_id='00000000-0000-0000-0000-000000000001' AND id IN (?,?)", [eventId, secondEventId]);
+  await query("UPDATE user_sessions SET is_deleted=true WHERE user_id IN (SELECT id FROM app_users WHERE username IN (?,?))", [usernameA, usernameB]);
+  await query("UPDATE app_users SET is_deleted=true WHERE username IN (?,?)", [usernameA, usernameB]);
   await new Promise(resolve => server.close(resolve));
+  await pool.end();
 }

@@ -1,13 +1,3 @@
-services:
-  - type: web
-    name: ib-history-updater
-    runtime: node
-    plan: free
-    buildCommand: npm ci
-    startCommand: npm run db:migrate && npm start
-    healthCheckPath: /api/health
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: DATABASE_URL
-        sync: false
+# This application is deployed on the Raspberry Pi because its MariaDB instance
+# only listens on localhost. See deploy/history-timeline.service.
+services: []

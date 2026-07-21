@@ -1,0 +1,22 @@
+[Unit]
+Description=IB History Timeline
+Wants=network-online.target
+After=network-online.target mariadb.service
+Requires=mariadb.service
+
+[Service]
+Type=simple
+User=baecha
+Group=baecha
+WorkingDirectory=/home/baecha/history-timeline
+EnvironmentFile=/home/baecha/history-timeline/.env
+ExecStart=/usr/bin/node /home/baecha/history-timeline/server.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
