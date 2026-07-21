@@ -7,8 +7,15 @@ const pool = mysql.createPool({
   uri: process.env.DATABASE_URL,
   connectionLimit: 10,
   dateStrings: true,
+  timezone: "Z",
   enableKeepAlive: true,
   keepAliveInitialDelay: 0
+});
+
+pool.on("connection", connection => {
+  connection.query("SET SESSION time_zone = '+00:00'", error => {
+    if (error) connection.destroy();
+  });
 });
 
 async function query(statement, values = [], connection = pool) {
