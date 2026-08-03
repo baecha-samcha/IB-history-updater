@@ -881,6 +881,7 @@ function openPeriodDetail(p) {
     s.innerHTML = `<div class="k">${k}</div><div class="v"></div>`;
     s.querySelector(".v").textContent = v; body.appendChild(s);
   };
+  sec("설명", p.description);
   sec("핵심 인물", p.figures);
   sec("출처", p.source);
   if (p.photo) {
@@ -897,13 +898,14 @@ function openPeriodDetail(p) {
 
 /* ---------- 기간 편집 ---------- */
 function openPeriodEdit(existing = null) {
-  const p = existing || { id: uid(), colorTagIds: [], startDate: "1900-01-01", endDate: "1910-12-31", title: "", figures: "", photo: "", source: "" };
+  const p = existing || { id: uid(), colorTagIds: [], startDate: "1900-01-01", endDate: "1910-12-31", title: "", description: "", figures: "", photo: "", source: "" };
   const minD = `${YEAR_MIN}-01-01`, maxD = `${YEAR_MAX}-12-31`;
   const f_title = input("text", p.title, { placeholder: "예: 빅토리아 시대" });
   const f_start = input("date", normalizeDate(p.startDate, "1900-01-01"), { min: minD, max: maxD });
   const f_end   = input("date", normalizeDate(p.endDate, "1910-12-31"), { min: minD, max: maxD });
   let pTagIds = [...(p.colorTagIds || [])];
   const tagSel = colorTagSelector(pTagIds, ids => { pTagIds = ids; });
+  const f_desc  = textarea(p.description);
   const f_fig   = textarea(p.figures);
   const f_src   = textarea(p.source);
   const f_photo = input("file", "", { accept: "image/*" });
@@ -919,6 +921,7 @@ function openPeriodEdit(existing = null) {
   body.appendChild(field("제목", f_title));
   body.appendChild(row(field("시작 연월일", f_start), field("끝 연월일", f_end)));
   body.appendChild(field("레이블(색상 태그)", tagSel));
+  body.appendChild(field("설명", f_desc));
   body.appendChild(field("핵심 인물", f_fig));
   body.appendChild(field("출처", f_src));
   body.appendChild(field("사진 첨부", f_photo));
@@ -938,7 +941,7 @@ function openPeriodEdit(existing = null) {
     const sy = +sd.slice(0, 4), ey = +ed.slice(0, 4);
     if (sy < YEAR_MIN || ey > YEAR_MAX) { alert(`${YEAR_MIN}~${YEAR_MAX} 범위로 입력하세요`); return; }
     if (ed < sd) { alert("끝 날짜가 시작보다 앞섭니다"); return; }
-    const obj = { id: p.id, title: f_title.value.trim(), colorTagIds: pTagIds, startDate: sd, endDate: ed, figures: f_fig.value.trim(), source: f_src.value.trim(), photo: photoData };
+    const obj = { id: p.id, title: f_title.value.trim(), colorTagIds: pTagIds, startDate: sd, endDate: ed, description: f_desc.value.trim(), figures: f_fig.value.trim(), source: f_src.value.trim(), photo: photoData };
     const idx = State.data.periods.findIndex(x => x.id === obj.id);
     if (idx >= 0) State.data.periods[idx] = obj; else State.data.periods.push(obj);
     persistUserData([...colorTagOperations(), { action: "upsert", entity: "period", item: obj }]); render(); closeModal();

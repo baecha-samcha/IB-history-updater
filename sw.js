@@ -1,5 +1,5 @@
 /* IB History Timeline — Service Worker */
-const CACHE = "ibhistory-v6";
+const CACHE = "ibhistory-v7";
 const ASSETS = [
   "./",
   "./index.html",

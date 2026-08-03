@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS periods (
   title text NOT NULL,
   start_date date,
   end_date date,
+  description text,
   figures text,
   source text,
   photo longtext,
