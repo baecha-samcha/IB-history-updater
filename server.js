@@ -85,16 +85,16 @@ async function getSharedData() {
   const userId = sharedUserId;
   const [colorTags, periods, events, flows, flowItems] = await Promise.all([
     query("SELECT id, name, color FROM color_tags WHERE user_id = ? AND is_deleted = false ORDER BY updated_at", [userId]),
-    query("SELECT id, title, start_date, end_date, description, figures, source, photo, color_tag_ids FROM periods WHERE user_id = ? AND is_deleted = false ORDER BY updated_at", [userId]),
-    query("SELECT id, title, event_date, description, figures, source, photo, color_tag_ids FROM events WHERE user_id = ? AND is_deleted = false ORDER BY updated_at", [userId]),
+    query("SELECT id, title, start_date, end_date, description, category, figures, source, photo, color_tag_ids FROM periods WHERE user_id = ? AND is_deleted = false ORDER BY updated_at", [userId]),
+    query("SELECT id, title, event_date, description, category, figures, source, photo, color_tag_ids FROM events WHERE user_id = ? AND is_deleted = false ORDER BY updated_at", [userId]),
     query("SELECT id, title, description, color_tag_ids FROM flows WHERE user_id = ? AND is_deleted = false ORDER BY updated_at", [userId]),
     query("SELECT flow_id, position, item_type, item_id FROM flow_items WHERE user_id = ? AND is_deleted = false ORDER BY flow_id, position", [userId])
   ]);
   const jsonArray = value => Array.isArray(value) ? value : JSON.parse(value || "[]");
   return {
     colorTags: colorTags.map(r => ({ id: r.id, name: r.name, color: r.color })),
-    periods: periods.map(r => ({ id: r.id, title: r.title, startDate: dateOnly(r.start_date), endDate: dateOnly(r.end_date), description: r.description, figures: r.figures, source: r.source, photo: r.photo, colorTagIds: jsonArray(r.color_tag_ids) })),
-    events: events.map(r => ({ id: r.id, title: r.title, date: dateOnly(r.event_date), description: r.description, figures: r.figures, source: r.source, photo: r.photo, colorTagIds: jsonArray(r.color_tag_ids) })),
+    periods: periods.map(r => ({ id: r.id, title: r.title, startDate: dateOnly(r.start_date), endDate: dateOnly(r.end_date), description: r.description, category: r.category, figures: r.figures, source: r.source, photo: r.photo, colorTagIds: jsonArray(r.color_tag_ids) })),
+    events: events.map(r => ({ id: r.id, title: r.title, date: dateOnly(r.event_date), description: r.description, category: r.category, figures: r.figures, source: r.source, photo: r.photo, colorTagIds: jsonArray(r.color_tag_ids) })),
     flows: flows.map(r => ({ id: r.id, title: r.title, description: r.description, colorTagIds: jsonArray(r.color_tag_ids),
       items: flowItems.filter(i => i.flow_id === r.id).map(i => ({ type: i.item_type, id: i.item_id })) }))
   };
@@ -149,17 +149,17 @@ app.post("/api/data/batch", authenticate, async (req, res) => {
         ON DUPLICATE KEY UPDATE name=VALUES(name),color=VALUES(color),is_deleted=false,updated_at=current_timestamp(3)`,
         [id, userId, text(item.name), text(item.color)]);
       if (entity === "period") await execute(`
-        INSERT INTO periods (id,user_id,title,start_date,end_date,description,figures,source,photo,color_tag_ids)
-        VALUES (?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE title=VALUES(title),start_date=VALUES(start_date),
-        end_date=VALUES(end_date),description=VALUES(description),figures=VALUES(figures),source=VALUES(source),photo=VALUES(photo),
+        INSERT INTO periods (id,user_id,title,start_date,end_date,description,category,figures,source,photo,color_tag_ids)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE title=VALUES(title),start_date=VALUES(start_date),
+        end_date=VALUES(end_date),description=VALUES(description),category=VALUES(category),figures=VALUES(figures),source=VALUES(source),photo=VALUES(photo),
         color_tag_ids=VALUES(color_tag_ids),is_deleted=false,updated_at=current_timestamp(3)`,
-        [id, userId, text(item.title), nullable(item.startDate), nullable(item.endDate), text(item.description), text(item.figures), text(item.source), text(item.photo), JSON.stringify(ids(item.colorTagIds))]);
+        [id, userId, text(item.title), nullable(item.startDate), nullable(item.endDate), text(item.description), text(item.category), text(item.figures), text(item.source), text(item.photo), JSON.stringify(ids(item.colorTagIds))]);
       if (entity === "event") await execute(`
-        INSERT INTO events (id,user_id,title,event_date,description,figures,source,photo,color_tag_ids)
-        VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE title=VALUES(title),event_date=VALUES(event_date),
-        description=VALUES(description),figures=VALUES(figures),source=VALUES(source),photo=VALUES(photo),
+        INSERT INTO events (id,user_id,title,event_date,description,category,figures,source,photo,color_tag_ids)
+        VALUES (?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE title=VALUES(title),event_date=VALUES(event_date),
+        description=VALUES(description),category=VALUES(category),figures=VALUES(figures),source=VALUES(source),photo=VALUES(photo),
         color_tag_ids=VALUES(color_tag_ids),is_deleted=false,updated_at=current_timestamp(3)`,
-        [id, userId, text(item.title), nullable(item.date), text(item.description), text(item.figures), text(item.source), text(item.photo), JSON.stringify(ids(item.colorTagIds))]);
+        [id, userId, text(item.title), nullable(item.date), text(item.description), text(item.category), text(item.figures), text(item.source), text(item.photo), JSON.stringify(ids(item.colorTagIds))]);
       if (entity === "flow") {
         await execute(`INSERT INTO flows (id,user_id,title,description,color_tag_ids) VALUES (?,?,?,?,?)
           ON DUPLICATE KEY UPDATE title=VALUES(title),description=VALUES(description),color_tag_ids=VALUES(color_tag_ids),is_deleted=false,updated_at=current_timestamp(3)`,
